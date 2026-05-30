@@ -1,9 +1,7 @@
 #include <cuda_runtime.h>
-#include <pybind11/pybind11.h>
+#include <string>
 
-namespace py = pybind11;
-
-// A trivial kernel — each thread writes its ID into an array
+// A trivial kernel — each thread writes its ID into an array.
 __global__ void hello_kernel(int* out, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
@@ -11,7 +9,7 @@ __global__ void hello_kernel(int* out, int n) {
     }
 }
 
-// CPU-side launcher — called from Python
+// CPU-side launcher — registered in python/bindings.cpp.
 std::string hello_cuda() {
     const int n = 8;
     int* d_out;
@@ -32,9 +30,4 @@ std::string hello_cuda() {
     }
     result += "]";
     return result;
-}
-
-PYBIND11_MODULE(_core, m) {
-    m.doc() = "VectorFlux core extension";
-    m.def("hello_cuda", &hello_cuda, "Run a hello-world CUDA kernel");
 }
