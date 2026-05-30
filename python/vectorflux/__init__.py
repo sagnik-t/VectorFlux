@@ -1,3 +1,3 @@
-from ._core import hello_cuda
+from ._core import hello_cuda, Tensor
 
-__all__ = ["hello_cuda"]
+__all__ = ["hello_cuda", "Tensor"]
