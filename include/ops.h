@@ -17,18 +17,17 @@ namespace vf {
 //
 // Device rules
 //   Both inputs must be on the same device.
-//   CUDA path throws "not yet implemented" until T06/T07 add it.
+//   matmul CUDA path throws "not yet implemented" until T07 adds cuBLAS.
 
 Tensor add   (const Tensor& a, const Tensor& b);
 Tensor mul   (const Tensor& a, const Tensor& b);
 Tensor relu  (const Tensor& a);
 Tensor matmul(const Tensor& a, const Tensor& b);
 
-// ── cpu:: — device-specific implementations (used by the dispatch layer) ──────
+// ── cpu:: — host implementations (used by the dispatch layer) ─────────────────
 //
-// T06 will add a parallel  vf::cuda::  namespace in ops_cuda.cu.
-// External callers should prefer the top-level vf:: functions; these are
-// exposed mainly so tests can target the CPU path directly if needed.
+// External callers should prefer the top-level vf:: functions.
+// These are exposed mainly so tests can target the CPU path directly.
 
 namespace cpu {
     Tensor add   (const Tensor& a, const Tensor& b);
@@ -36,5 +35,17 @@ namespace cpu {
     Tensor relu  (const Tensor& a);
     Tensor matmul(const Tensor& a, const Tensor& b);
 }  // namespace cpu
+
+// ── cuda:: — device implementations (T06: add/mul/relu; T07: matmul) ─────────
+//
+// Defined in src/ops_cuda.cu, compiled by nvcc.
+// The dispatch layer in ops_cpu.cpp calls these after verifying device.
+
+namespace cuda {
+    Tensor add (const Tensor& a, const Tensor& b);
+    Tensor mul (const Tensor& a, const Tensor& b);
+    Tensor relu(const Tensor& a);
+    // matmul added in T07 (cuBLAS)
+}  // namespace cuda
 
 }  // namespace vf
