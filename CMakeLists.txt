@@ -22,6 +22,11 @@ find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 # ── pybind11 ───────────────────────────────────────────────────────────────────
 add_subdirectory(third_party/pybind11)
 
+# ── CUDA toolkit (gives .cpp files access to cuda_runtime.h) ──────────────────
+# LANGUAGES CUDA only routes .cu files through nvcc; plain .cpp files compiled
+# by g++ need explicit include/link via the CUDAToolkit imported target.
+find_package(CUDAToolkit REQUIRED)
+
 # ── Include paths ──────────────────────────────────────────────────────────────
 include_directories(include)
 
@@ -33,9 +38,13 @@ include_directories(include)
 pybind11_add_module(_core
     python/bindings.cpp
     src/hello.cu
-    src/tensor.cpp      # T02: Tensor CPU class
+    src/tensor.cpp      # T02/T05: Tensor class (CPU + CUDA backend)
     src/ops_cpu.cpp     # T04: Basic CPU ops
 )
+
+# CUDA::cudart brings in the CUDA include directory + libcudart for the whole
+# target, so tensor.cpp (compiled by g++) can #include <cuda_runtime.h>.
+target_link_libraries(_core PRIVATE CUDA::cudart)
 
 set_target_properties(_core PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
