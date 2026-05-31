@@ -1,5 +1,20 @@
-.venv/
+# Build artifacts
 build/
 *.so
+*.pyc
 __pycache__/
+
+# Python env
+.venv/
+
+# IDE
 .vscode/
+.idea/
+
+# Third-party (tracked as submodule, not files)
+# third_party/pybind11 is intentionally a submodule — git handles it
+
+# Data
+*.idx
+*.ubyte
+data/
