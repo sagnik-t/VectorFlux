@@ -31,15 +31,17 @@ find_package(CUDAToolkit REQUIRED)
 include_directories(include)
 
 # ── Extension module ───────────────────────────────────────────────────────────
-# Each task adds its source files here.
 # T01: hello-world CUDA kernel + pybind11 wiring
 # T02: Tensor CPU class
 # T04: Basic CPU ops (add, mul, relu, matmul)
+# T05: CUDA tensor backend (.to())
+# T06: Element-wise CUDA kernels (add, mul, relu)
 pybind11_add_module(_core
     python/bindings.cpp
     src/hello.cu
     src/tensor.cpp      # T02/T05: Tensor class (CPU + CUDA backend)
-    src/ops_cpu.cpp     # T04: Basic CPU ops
+    src/ops_cpu.cpp     # T04: CPU ops + dispatch layer
+    src/ops_cuda.cu     # T06: Element-wise CUDA kernels
 )
 
 # CUDA::cudart brings in the CUDA include directory + libcudart for the whole
