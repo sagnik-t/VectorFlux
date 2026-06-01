@@ -36,17 +36,18 @@ include_directories(include)
 # T04: Basic CPU ops (add, mul, relu, matmul)
 # T05: CUDA tensor backend (.to())
 # T06: Element-wise CUDA kernels (add, mul, relu)
+# T07: cuBLAS matmul
 pybind11_add_module(_core
     python/bindings.cpp
     src/hello.cu
     src/tensor.cpp      # T02/T05: Tensor class (CPU + CUDA backend)
     src/ops_cpu.cpp     # T04: CPU ops + dispatch layer
-    src/ops_cuda.cu     # T06: Element-wise CUDA kernels
+    src/ops_cuda.cu     # T06/T07: CUDA kernels + cuBLAS matmul
 )
 
-# CUDA::cudart brings in the CUDA include directory + libcudart for the whole
-# target, so tensor.cpp (compiled by g++) can #include <cuda_runtime.h>.
-target_link_libraries(_core PRIVATE CUDA::cudart)
+# CUDA::cudart  — cuda_runtime.h + libcudart (needed by tensor.cpp via g++)
+# CUDA::cublas  — cublas_v2.h   + libcublas (needed by ops_cuda.cu)
+target_link_libraries(_core PRIVATE CUDA::cudart CUDA::cublas)
 
 set_target_properties(_core PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
