@@ -5,6 +5,7 @@
 #include <cstring>
 #include "tensor.h"
 #include "ops.h"
+#include "graph.h"
 
 namespace py = pybind11;
 
@@ -99,4 +100,68 @@ PYBIND11_MODULE(_core, m) {
     m.def("matmul",
         [](const vf::Tensor& a, const vf::Tensor& b) { return vf::matmul(a, b); },
         py::arg("a"), py::arg("b"));
+
+    // ── T08: Graph nodes ──────────────────────────────────────────────────────
+    //
+    // vf.Node — a symbolic node in the computation DAG.
+    //
+    // Properties:
+    //   .name      str  — auto-generated or user-supplied name
+    //   .type      str  — op type, e.g. "Add", "MatMul", "Const"
+    //   .inputs    list[Node] — input nodes (empty for leaf nodes)
+    //   .evaluated bool — True after Session.run() populates the output
+    //
+    // Graph construction (all operate on the default global graph):
+    //   vf.make_const(tensor)      → Node
+    //   vf.make_add(a, b)          → Node
+    //   vf.make_mul(a, b)          → Node
+    //   vf.make_relu(a)            → Node
+    //   vf.make_matmul(a, b)       → Node
+    //   vf.reset_default_graph()   → None  (clears the graph; use between tests)
+
+    py::class_<vf::Node, vf::NodeRef>(m, "Node")
+        .def_property_readonly("name",      &vf::Node::name)
+        .def_property_readonly("type",      &vf::Node::type)
+        .def_property_readonly("inputs",    &vf::Node::inputs)
+        .def_property_readonly("evaluated", &vf::Node::evaluated)
+        .def("__repr__", [](const vf::Node& n) {
+            return "Node(type=" + n.type() +
+                   ", name=" + n.name() +
+                   ", inputs=" + std::to_string(n.inputs().size()) + ")";
+        });
+
+    m.def("make_const",
+        [](const vf::Tensor& t, const std::string& name) {
+            return vf::default_graph().make_const(t, name);
+        },
+        py::arg("value"), py::arg("name") = "",
+        "Create a Const leaf node holding a fixed tensor.");
+
+    m.def("make_add",
+        [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
+            return vf::default_graph().make_add(a, b, name);
+        },
+        py::arg("a"), py::arg("b"), py::arg("name") = "");
+
+    m.def("make_mul",
+        [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
+            return vf::default_graph().make_mul(a, b, name);
+        },
+        py::arg("a"), py::arg("b"), py::arg("name") = "");
+
+    m.def("make_relu",
+        [](vf::NodeRef a, const std::string& name) {
+            return vf::default_graph().make_relu(a, name);
+        },
+        py::arg("a"), py::arg("name") = "");
+
+    m.def("make_matmul",
+        [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
+            return vf::default_graph().make_matmul(a, b, name);
+        },
+        py::arg("a"), py::arg("b"), py::arg("name") = "");
+
+    m.def("reset_default_graph",
+        &vf::reset_default_graph,
+        "Clear all nodes from the default graph (use between tests).");
 }
