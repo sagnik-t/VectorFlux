@@ -17,7 +17,6 @@ namespace vf {
 //
 // Device rules
 //   Both inputs must be on the same device.
-//   matmul CUDA path throws "not yet implemented" until T07 adds cuBLAS.
 
 Tensor add   (const Tensor& a, const Tensor& b);
 Tensor mul   (const Tensor& a, const Tensor& b);
@@ -42,10 +41,10 @@ namespace cpu {
 // The dispatch layer in ops_cpu.cpp calls these after verifying device.
 
 namespace cuda {
-    Tensor add (const Tensor& a, const Tensor& b);
-    Tensor mul (const Tensor& a, const Tensor& b);
-    Tensor relu(const Tensor& a);
-    // matmul added in T07 (cuBLAS)
+    Tensor add   (const Tensor& a, const Tensor& b);
+    Tensor mul   (const Tensor& a, const Tensor& b);
+    Tensor relu  (const Tensor& a);
+    Tensor matmul(const Tensor& a, const Tensor& b);  // T07: cuBLAS
 }  // namespace cuda
 
 }  // namespace vf
