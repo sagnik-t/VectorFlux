@@ -141,8 +141,23 @@ Tensor relu(const Tensor& a) {
 
 Tensor matmul(const Tensor& a, const Tensor& b) {
     check_same_device(a, b);
+
+    // Shape validation shared by both paths.
+    if (a.ndim() != 2 || b.ndim() != 2) {
+        throw std::invalid_argument(
+            "matmul requires 2-D tensors (got ndim=" +
+            std::to_string(a.ndim()) + " and " +
+            std::to_string(b.ndim()) + ")");
+    }
+    if (a.shape()[1] != b.shape()[0]) {
+        throw std::invalid_argument(
+            "matmul: inner dimensions must match "
+            "(a.shape[1]=" + std::to_string(a.shape()[1]) +
+            " != b.shape[0]=" + std::to_string(b.shape()[0]) + ")");
+    }
+
     if (a.device() == Device::CPU) return cpu::matmul(a, b);
-    throw std::runtime_error("vf::matmul: CUDA not yet implemented (T07)");
+    return cuda::matmul(a, b);
 }
 
 }  // namespace vf
