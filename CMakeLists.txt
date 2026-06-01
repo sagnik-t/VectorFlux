@@ -38,6 +38,7 @@ include_directories(include)
 # T06: Element-wise CUDA kernels (add, mul, relu)
 # T07: cuBLAS matmul
 # T08: Op base class + DAG graph nodes
+# T09: Forward pass / Session.run()
 pybind11_add_module(_core
     python/bindings.cpp
     src/hello.cu
@@ -45,6 +46,7 @@ pybind11_add_module(_core
     src/ops_cpu.cpp     # T04: CPU ops + dispatch layer
     src/ops_cuda.cu     # T06/T07: CUDA kernels + cuBLAS matmul
     src/graph.cpp       # T08: Op base class + DAG graph nodes
+    src/session.cpp     # T09: Forward pass / Session.run()
 )
 
 # CUDA::cudart  — cuda_runtime.h + libcudart (needed by tensor.cpp via g++)
