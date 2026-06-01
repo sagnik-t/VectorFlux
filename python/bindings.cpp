@@ -6,10 +6,23 @@
 #include "tensor.h"
 #include "ops.h"
 #include "graph.h"
+#include "session.h"
 
 namespace py = pybind11;
 
 std::string hello_cuda();   // src/hello.cu
+
+// Helper: convert a Python dict {Node: Tensor} → C++ unordered_map.
+// Needed because pybind11's STL converters don't handle shared_ptr keys.
+static std::unordered_map<vf::NodeRef, vf::Tensor>
+feed_dict_from_py(const py::dict& d) {
+    std::unordered_map<vf::NodeRef, vf::Tensor> fd;
+    fd.reserve(d.size());
+    for (auto& item : d) {
+        fd.emplace(item.first.cast<vf::NodeRef>(), item.second.cast<vf::Tensor>());
+    }
+    return fd;
+}
 
 PYBIND11_MODULE(_core, m) {
     m.doc() = "VectorFlux core extension";
@@ -102,22 +115,6 @@ PYBIND11_MODULE(_core, m) {
         py::arg("a"), py::arg("b"));
 
     // ── T08: Graph nodes ──────────────────────────────────────────────────────
-    //
-    // vf.Node — a symbolic node in the computation DAG.
-    //
-    // Properties:
-    //   .name      str  — auto-generated or user-supplied name
-    //   .type      str  — op type, e.g. "Add", "MatMul", "Const"
-    //   .inputs    list[Node] — input nodes (empty for leaf nodes)
-    //   .evaluated bool — True after Session.run() populates the output
-    //
-    // Graph construction (all operate on the default global graph):
-    //   vf.make_const(tensor)      → Node
-    //   vf.make_add(a, b)          → Node
-    //   vf.make_mul(a, b)          → Node
-    //   vf.make_relu(a)            → Node
-    //   vf.make_matmul(a, b)       → Node
-    //   vf.reset_default_graph()   → None  (clears the graph; use between tests)
 
     py::class_<vf::Node, vf::NodeRef>(m, "Node")
         .def_property_readonly("name",      &vf::Node::name)
@@ -164,4 +161,41 @@ PYBIND11_MODULE(_core, m) {
     m.def("reset_default_graph",
         &vf::reset_default_graph,
         "Clear all nodes from the default graph (use between tests).");
+
+    // ── T09: Session ──────────────────────────────────────────────────────────
+    //
+    // vf.Session() — executes a computation graph via topological traversal.
+    //
+    // sess.run(node)                      → Tensor
+    // sess.run([node1, node2])            → list[Tensor]
+    // sess.run(node,   feed_dict={n: t})  → Tensor
+    // sess.run([...],  feed_dict={n: t})  → list[Tensor]
+    //
+    // feed_dict maps any Node to a Tensor, overriding that node's Op for this
+    // run.  The dict is not retained between calls.
+
+    py::class_<vf::Session>(m, "Session")
+        .def(py::init<>(), "Create a Session operating on the default graph.")
+
+        // Single fetch → Tensor
+        .def("run",
+            [](vf::Session& sess,
+               vf::NodeRef   fetch,
+               py::dict      feed_dict_py) -> vf::Tensor {
+                return sess.run(fetch, feed_dict_from_py(feed_dict_py));
+            },
+            py::arg("fetch"),
+            py::arg("feed_dict") = py::dict(),
+            "Execute the graph and return the output of `fetch`.")
+
+        // List of fetches → list[Tensor]
+        .def("run",
+            [](vf::Session&                sess,
+               std::vector<vf::NodeRef>    fetches,
+               py::dict                    feed_dict_py) -> std::vector<vf::Tensor> {
+                return sess.run(fetches, feed_dict_from_py(feed_dict_py));
+            },
+            py::arg("fetches"),
+            py::arg("feed_dict") = py::dict(),
+            "Execute the graph and return the outputs of each node in `fetches`.");
 }
