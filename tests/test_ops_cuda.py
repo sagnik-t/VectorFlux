@@ -1,6 +1,6 @@
 """
-tests/test_ops_cuda.py — T06: Element-wise CUDA ops
-Tests for vf.add, vf.mul, vf.relu on CUDA tensors.
+tests/test_ops_cuda.py — T06/T07: Element-wise CUDA ops + cuBLAS matmul
+Tests for vf.add, vf.mul, vf.relu, vf.matmul on CUDA tensors.
 All numerical results are validated against the CPU path / NumPy.
 """
 
@@ -63,7 +63,6 @@ class TestCudaAdd:
             vf.add(a, b)
 
     def test_cross_device_raises(self):
-        """One CPU tensor + one CUDA tensor must raise."""
         a = ct(np.array([1.0, 2.0]))
         b = cpu_t(np.array([1.0, 2.0]))
         with pytest.raises(Exception):
@@ -146,12 +145,84 @@ class TestCudaRelu:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# matmul — must still raise on CUDA until T07
+# matmul — cuBLAS (T07)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestCudaMatmulNotYet:
-    def test_matmul_cuda_raises(self):
-        a = vf.Tensor([2, 3]).to("cuda")
-        b = vf.Tensor([3, 2]).to("cuda")
-        with pytest.raises(Exception, match="T07"):
+class TestCudaMatmul:
+    def test_output_device_is_cuda(self):
+        a = ct(np.ones((2, 3), dtype=np.float32))
+        b = ct(np.ones((3, 4), dtype=np.float32))
+        assert vf.matmul(a, b).device == "cuda"
+
+    def test_output_shape(self):
+        a = ct(np.ones((2, 3), dtype=np.float32))
+        b = ct(np.ones((3, 4), dtype=np.float32))
+        assert vf.matmul(a, b).shape == (2, 4)
+
+    def test_basic_2x3_3x2(self):
+        na = np.array([[1, 2, 3],
+                       [4, 5, 6]], dtype=np.float32)
+        nb = np.array([[7,  8],
+                       [9,  10],
+                       [11, 12]], dtype=np.float32)
+        out = to_np(vf.matmul(ct(na), ct(nb)))
+        np.testing.assert_allclose(out, na @ nb, atol=1e-4)
+
+    def test_identity(self):
+        na = np.arange(1, 10, dtype=np.float32).reshape(3, 3)
+        eye = np.eye(3, dtype=np.float32)
+        out = to_np(vf.matmul(ct(na), ct(eye)))
+        np.testing.assert_allclose(out, na, atol=1e-5)
+
+    def test_square_random(self):
+        rng = np.random.default_rng(6)
+        na = rng.standard_normal((4, 4)).astype(np.float32)
+        nb = rng.standard_normal((4, 4)).astype(np.float32)
+        np.testing.assert_allclose(
+            to_np(vf.matmul(ct(na), ct(nb))), na @ nb, atol=1e-4)
+
+    def test_non_square(self):
+        rng = np.random.default_rng(7)
+        na = rng.standard_normal((3, 7)).astype(np.float32)
+        nb = rng.standard_normal((7, 5)).astype(np.float32)
+        out = to_np(vf.matmul(ct(na), ct(nb)))
+        assert out.shape == (3, 5)
+        np.testing.assert_allclose(out, na @ nb, atol=1e-4)
+
+    def test_large(self):
+        rng = np.random.default_rng(8)
+        na = rng.standard_normal((128, 256)).astype(np.float32)
+        nb = rng.standard_normal((256, 64)).astype(np.float32)
+        np.testing.assert_allclose(
+            to_np(vf.matmul(ct(na), ct(nb))), na @ nb, atol=1e-2)
+
+    def test_matches_cpu(self):
+        """CUDA result must agree with the CPU naive matmul."""
+        rng = np.random.default_rng(9)
+        na = rng.standard_normal((16, 32)).astype(np.float32)
+        nb = rng.standard_normal((32, 8)).astype(np.float32)
+        cpu_out = vf.matmul(cpu_t(na), cpu_t(nb)).to_numpy()
+        cuda_out = to_np(vf.matmul(ct(na), ct(nb)))
+        np.testing.assert_allclose(cuda_out, cpu_out, atol=1e-4)
+
+    def test_vector_dot_product(self):
+        """[1, N] @ [N, 1] → [1, 1]"""
+        na = np.array([[1, 2, 3]], dtype=np.float32)
+        nb = np.array([[1], [2], [3]], dtype=np.float32)
+        out = to_np(vf.matmul(ct(na), ct(nb)))
+        assert out.shape == (1, 1)
+        assert out[0, 0] == pytest.approx(14.0, abs=1e-4)
+
+    def test_inner_dim_mismatch_raises(self):
+        with pytest.raises(Exception, match="inner dimensions|dimension"):
+            vf.matmul(vf.Tensor([2, 3]).to("cuda"), vf.Tensor([4, 2]).to("cuda"))
+
+    def test_1d_input_raises(self):
+        with pytest.raises(Exception, match="2-D"):
+            vf.matmul(vf.Tensor([4]).to("cuda"), vf.Tensor([4]).to("cuda"))
+
+    def test_cross_device_raises(self):
+        a = ct(np.ones((2, 3), dtype=np.float32))
+        b = cpu_t(np.ones((3, 2), dtype=np.float32))
+        with pytest.raises(Exception):
             vf.matmul(a, b)
