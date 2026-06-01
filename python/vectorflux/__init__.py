@@ -5,6 +5,7 @@ from ._core import (
     Node,
     make_const, make_add, make_mul, make_relu, make_matmul,
     reset_default_graph,
+    Session,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "Node",
     "make_const", "make_add", "make_mul", "make_relu", "make_matmul",
     "reset_default_graph",
+    "Session",
 ]
