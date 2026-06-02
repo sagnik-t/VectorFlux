@@ -5,8 +5,8 @@
 
 namespace vf {
 
-// ── Concrete op forward() implementations ────────────────────────────────────
-// Delegate directly to the existing eager dispatch layer in ops_cpu.cpp.
+// ── Forward pass implementations ──────────────────────────────────────────────
+// Delegate to the eager dispatch layer in ops_cpu.cpp / ops_cuda.cu.
 
 Tensor AddOp::forward(const std::vector<Tensor>& in) const {
     return vf::add(in[0], in[1]);
@@ -22,6 +22,71 @@ Tensor ReluOp::forward(const std::vector<Tensor>& in) const {
 
 Tensor MatMulOp::forward(const std::vector<Tensor>& in) const {
     return vf::matmul(in[0], in[1]);
+}
+
+Tensor StepOp::forward(const std::vector<Tensor>& in) const {
+    return vf::step(in[0]);
+}
+
+Tensor TransposeOp::forward(const std::vector<Tensor>& in) const {
+    return vf::transpose(in[0]);
+}
+
+Tensor OnesLikeOp::forward(const std::vector<Tensor>& in) const {
+    const auto& src = in[0];
+    const int64_t n = src.numel();
+    std::vector<float> ones_data(static_cast<size_t>(n), 1.0f);
+    // Tensor(shape, data, device) uploads to GPU if device == CUDA.
+    return Tensor(src.shape(), std::move(ones_data), src.device());
+}
+
+// ── Backward pass (gradient graph construction) ───────────────────────────────
+//
+// Each gradient() call wires new nodes into the default graph.
+// Session.run() then evaluates them together with the forward nodes.
+
+// add: out = a + b
+//   dL/da = dL/dout * 1  = grad_in
+//   dL/db = dL/dout * 1  = grad_in
+std::vector<NodeRef> AddOp::gradient(const NodeRef& /*node*/,
+                                      const NodeRef& grad_in) const {
+    return {grad_in, grad_in};
+}
+
+// mul: out = a * b
+//   dL/da = dL/dout * b
+//   dL/db = dL/dout * a
+std::vector<NodeRef> MulOp::gradient(const NodeRef& node,
+                                      const NodeRef& grad_in) const {
+    const NodeRef& a = node->inputs()[0];
+    const NodeRef& b = node->inputs()[1];
+    return {
+        default_graph().make_mul(grad_in, b),
+        default_graph().make_mul(grad_in, a)
+    };
+}
+
+// relu: out = max(0, a)
+//   dL/da = dL/dout * step(a)   (step = Heaviside, 1 if x>0 else 0)
+std::vector<NodeRef> ReluOp::gradient(const NodeRef& node,
+                                       const NodeRef& grad_in) const {
+    const NodeRef& a = node->inputs()[0];
+    return {default_graph().make_mul(grad_in, default_graph().make_step(a))};
+}
+
+// matmul: out = A @ B,  A=[M,K]  B=[K,N]  out=[M,N]
+//   dL/dA = dL/dout @ B^T   →  [M,N] @ [N,K] = [M,K]
+//   dL/dB = A^T @ dL/dout   →  [K,M] @ [M,N] = [K,N]
+std::vector<NodeRef> MatMulOp::gradient(const NodeRef& node,
+                                         const NodeRef& grad_in) const {
+    const NodeRef& a = node->inputs()[0];
+    const NodeRef& b = node->inputs()[1];
+    return {
+        default_graph().make_matmul(grad_in,
+                                    default_graph().make_transpose(b)),
+        default_graph().make_matmul(default_graph().make_transpose(a),
+                                    grad_in)
+    };
 }
 
 // ── Node ──────────────────────────────────────────────────────────────────────
@@ -82,6 +147,18 @@ NodeRef Graph::make_relu(NodeRef a, std::string name) {
 
 NodeRef Graph::make_matmul(NodeRef a, NodeRef b, std::string name) {
     return register_node(std::make_shared<MatMulOp>(), {a, b}, "MatMul", name);
+}
+
+NodeRef Graph::make_step(NodeRef a, std::string name) {
+    return register_node(std::make_shared<StepOp>(), {a}, "Step", name);
+}
+
+NodeRef Graph::make_transpose(NodeRef a, std::string name) {
+    return register_node(std::make_shared<TransposeOp>(), {a}, "Transpose", name);
+}
+
+NodeRef Graph::make_oneslike(NodeRef a, std::string name) {
+    return register_node(std::make_shared<OnesLikeOp>(), {a}, "OnesLike", name);
 }
 
 void Graph::reset_values() {
