@@ -113,6 +113,71 @@ public:
     Tensor forward(const std::vector<Tensor>& in) const override;
 };
 
+// ── T11: Placeholder and Variable ops ────────────────────────────────────────
+
+// Placeholder: shape is declared at build time; value is injected at run time
+// via feed_dict.  Calling forward() without a feed raises a clear error.
+class PlaceholderOp : public Op {
+public:
+    explicit PlaceholderOp(std::vector<int64_t> shape)
+        : shape_(std::move(shape)) {}
+    std::string type_name() const override { return "Placeholder"; }
+    Tensor forward(const std::vector<Tensor>&) const override {
+        throw std::runtime_error(
+            "Placeholder has no value — provide one via feed_dict");
+    }
+    const std::vector<int64_t>& placeholder_shape() const { return shape_; }
+private:
+    std::vector<int64_t> shape_;
+};
+
+// Variable: trainable parameter with mutable state.
+//   forward()    — returns current_value_ (called by Session.run())
+//   assign(t)    — replaces current_value_ (called by optimizers)
+//   initialize() — resets current_value_ to initial_value_ (called by InitVariablesOp)
+class VariableOp : public Op {
+public:
+    explicit VariableOp(Tensor initial_value)
+        : initial_value_(initial_value),
+          current_value_(std::move(initial_value)) {}
+
+    std::string type_name() const override { return "Variable"; }
+
+    // Returns the current value; does NOT modify any state (const-correct).
+    Tensor forward(const std::vector<Tensor>&) const override {
+        return current_value_;
+    }
+
+    // Update the stored parameter (e.g. after an optimizer step).
+    void assign(Tensor new_value) { current_value_ = std::move(new_value); }
+
+    // Reset to the value supplied at construction.
+    void initialize() { current_value_ = initial_value_; }
+
+    const Tensor& value() const { return current_value_; }
+
+private:
+    Tensor initial_value_;   // frozen copy for re-initialisation
+    Tensor current_value_;   // mutable working copy
+};
+
+// InitVariablesOp: when executed by Session.run(), calls initialize() on every
+// Variable captured at construction time.  Returns a dummy scalar so it can
+// be passed to sess.run() like any other node.
+//
+// global_variables_initializer() creates one of these with a snapshot of the
+// graph's variable list at call time — variables added afterwards are not
+// included (consistent with TF1 behaviour).
+class InitVariablesOp : public Op {
+public:
+    explicit InitVariablesOp(std::vector<NodeRef> variables)
+        : variables_(std::move(variables)) {}
+    std::string type_name() const override { return "InitVariables"; }
+    Tensor forward(const std::vector<Tensor>&) const override;
+private:
+    std::vector<NodeRef> variables_;
+};
+
 // ── Node ──────────────────────────────────────────────────────────────────────
 
 class Node {
@@ -143,11 +208,21 @@ private:
 class Graph {
 public:
     // ── User-facing ops ───────────────────────────────────────────────────────
-    NodeRef make_const    (Tensor value,            std::string name = "");
-    NodeRef make_add      (NodeRef a, NodeRef b,    std::string name = "");
-    NodeRef make_mul      (NodeRef a, NodeRef b,    std::string name = "");
-    NodeRef make_relu     (NodeRef a,               std::string name = "");
-    NodeRef make_matmul   (NodeRef a, NodeRef b,    std::string name = "");
+    NodeRef make_const    (Tensor value,                        std::string name = "");
+    NodeRef make_add      (NodeRef a, NodeRef b,                std::string name = "");
+    NodeRef make_mul      (NodeRef a, NodeRef b,                std::string name = "");
+    NodeRef make_relu     (NodeRef a,                           std::string name = "");
+    NodeRef make_matmul   (NodeRef a, NodeRef b,                std::string name = "");
+
+    // ── T11: trainable graph nodes ────────────────────────────────────────────
+    // make_placeholder: declare an input slot; fill it at run time via feed_dict.
+    NodeRef make_placeholder(std::vector<int64_t> shape,        std::string name = "");
+    // make_variable: create a trainable parameter initialised to `initial_value`.
+    // The node is recorded in variables_ for global_variables_initializer().
+    NodeRef make_variable   (Tensor initial_value,              std::string name = "");
+    // make_init_variables: snapshot the current variable list and return a node
+    // that, when run, resets all of them to their initial values.
+    NodeRef make_init_variables(                                std::string name = "");
 
     // ── Gradient-support ops ──────────────────────────────────────────────────
     NodeRef make_step     (NodeRef a,               std::string name = "");
@@ -155,13 +230,15 @@ public:
     NodeRef make_oneslike (NodeRef a,               std::string name = "");
 
     void reset_values();
-    void clear();
+    void clear();   // also clears the variables_ list
 
-    const std::vector<NodeRef>& nodes() const { return nodes_; }
-    std::size_t                 size()  const { return nodes_.size(); }
+    const std::vector<NodeRef>& nodes()     const { return nodes_;     }
+    const std::vector<NodeRef>& variables() const { return variables_; }
+    std::size_t                 size()      const { return nodes_.size(); }
 
 private:
     std::vector<NodeRef> nodes_;
+    std::vector<NodeRef> variables_;   // Variable nodes in insertion order
     int                  next_id_ = 0;
 
     NodeRef register_node(std::shared_ptr<Op>  op,
