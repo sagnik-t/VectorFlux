@@ -41,26 +41,22 @@ namespace cpu {
 
 Tensor add(const Tensor& a, const Tensor& b) {
     check_same_shape(a, b, "add");
-
     const int64_t  n  = a.numel();
     Tensor         out(a.shape());
     const float*   pa = a.data();
     const float*   pb = b.data();
     float*         pc = out.data();
-
     for (int64_t i = 0; i < n; ++i) pc[i] = pa[i] + pb[i];
     return out;
 }
 
 Tensor mul(const Tensor& a, const Tensor& b) {
     check_same_shape(a, b, "mul");
-
     const int64_t  n  = a.numel();
     Tensor         out(a.shape());
     const float*   pa = a.data();
     const float*   pb = b.data();
     float*         pc = out.data();
-
     for (int64_t i = 0; i < n; ++i) pc[i] = pa[i] * pb[i];
     return out;
 }
@@ -70,14 +66,23 @@ Tensor relu(const Tensor& a) {
     Tensor         out(a.shape());
     const float*   pa = a.data();
     float*         pc = out.data();
-
     for (int64_t i = 0; i < n; ++i)
         pc[i] = pa[i] > 0.0f ? pa[i] : 0.0f;
     return out;
 }
 
+// step(x) = (x > 0) ? 1.0 : 0.0  — subgradient convention: step(0) = 0
+Tensor step(const Tensor& a) {
+    const int64_t  n  = a.numel();
+    Tensor         out(a.shape());
+    const float*   pa = a.data();
+    float*         pc = out.data();
+    for (int64_t i = 0; i < n; ++i)
+        pc[i] = pa[i] > 0.0f ? 1.0f : 0.0f;
+    return out;
+}
+
 // Naive O(M·K·N) triple-loop.
-// a : [M, K]   b : [K, N]   →   out : [M, N]
 Tensor matmul(const Tensor& a, const Tensor& b) {
     if (a.ndim() != 2 || b.ndim() != 2) {
         throw std::invalid_argument(
@@ -85,24 +90,20 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
             std::to_string(a.ndim()) + " and " +
             std::to_string(b.ndim()) + ")");
     }
-
     const int64_t M  = a.shape()[0];
     const int64_t K  = a.shape()[1];
     const int64_t K2 = b.shape()[0];
     const int64_t N  = b.shape()[1];
-
     if (K != K2) {
         throw std::invalid_argument(
             "matmul: inner dimensions must match "
             "(a.shape[1]=" + std::to_string(K) +
             " != b.shape[0]=" + std::to_string(K2) + ")");
     }
-
     Tensor out({M, N});
     const float* pa = a.data();
     const float* pb = b.data();
     float*       pc = out.data();
-
     for (int64_t i = 0; i < M; ++i)
         for (int64_t j = 0; j < N; ++j) {
             float acc = 0.0f;
@@ -113,12 +114,27 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     return out;
 }
 
+// Row-major transpose: [M, N] → [N, M]
+Tensor transpose(const Tensor& a) {
+    if (a.ndim() != 2) {
+        throw std::invalid_argument(
+            "transpose requires a 2-D tensor (got ndim=" +
+            std::to_string(a.ndim()) + ")");
+    }
+    const int64_t M  = a.shape()[0];
+    const int64_t N  = a.shape()[1];
+    Tensor        out({N, M});
+    const float*  pa = a.data();
+    float*        pc = out.data();
+    for (int64_t i = 0; i < M; ++i)
+        for (int64_t j = 0; j < N; ++j)
+            pc[j * M + i] = pa[i * N + j];
+    return out;
+}
+
 }  // namespace cpu
 
 // ── Dispatch layer ────────────────────────────────────────────────────────────
-//
-// Shape / device validation lives here; the cpu:: and cuda:: implementations
-// receive pre-validated inputs.
 
 Tensor add(const Tensor& a, const Tensor& b) {
     check_same_device(a, b);
@@ -139,10 +155,13 @@ Tensor relu(const Tensor& a) {
     return cuda::relu(a);
 }
 
+Tensor step(const Tensor& a) {
+    if (a.device() == Device::CPU) return cpu::step(a);
+    return cuda::step(a);
+}
+
 Tensor matmul(const Tensor& a, const Tensor& b) {
     check_same_device(a, b);
-
-    // Shape validation shared by both paths.
     if (a.ndim() != 2 || b.ndim() != 2) {
         throw std::invalid_argument(
             "matmul requires 2-D tensors (got ndim=" +
@@ -155,9 +174,18 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
             "(a.shape[1]=" + std::to_string(a.shape()[1]) +
             " != b.shape[0]=" + std::to_string(b.shape()[0]) + ")");
     }
-
     if (a.device() == Device::CPU) return cpu::matmul(a, b);
     return cuda::matmul(a, b);
+}
+
+Tensor transpose(const Tensor& a) {
+    if (a.ndim() != 2) {
+        throw std::invalid_argument(
+            "transpose requires a 2-D tensor (got ndim=" +
+            std::to_string(a.ndim()) + ")");
+    }
+    if (a.device() == Device::CPU) return cpu::transpose(a);
+    return cuda::transpose(a);
 }
 
 }  // namespace vf
