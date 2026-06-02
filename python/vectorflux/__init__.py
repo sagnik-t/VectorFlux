@@ -2,9 +2,12 @@ from ._core import (
     hello_cuda,
     Tensor,
     add, mul, relu, matmul,
+    step, transpose,
     Node,
     make_const, make_add, make_mul, make_relu, make_matmul,
+    make_step, make_transpose, make_oneslike,
     reset_default_graph,
+    gradients,
     Session,
 )
 
@@ -12,8 +15,11 @@ __all__ = [
     "hello_cuda",
     "Tensor",
     "add", "mul", "relu", "matmul",
+    "step", "transpose",
     "Node",
     "make_const", "make_add", "make_mul", "make_relu", "make_matmul",
+    "make_step", "make_transpose", "make_oneslike",
     "reset_default_graph",
+    "gradients",
     "Session",
 ]
