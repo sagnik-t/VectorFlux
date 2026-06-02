@@ -141,6 +141,41 @@ PYBIND11_MODULE(_core, m) {
             return vf::default_graph().make_oneslike(a, name);
         }, py::arg("a"), py::arg("name") = "");
 
+    // ── T11: Placeholder, Variable, global_variables_initializer ─────────────
+
+    // make_placeholder: declare an input slot that must be fed at run time.
+    m.def("make_placeholder",
+        [](std::vector<int64_t> shape, const std::string& name) {
+            return vf::default_graph().make_placeholder(std::move(shape), name);
+        }, py::arg("shape"), py::arg("name") = "");
+
+    // make_variable: create a trainable parameter node with an initial value.
+    m.def("make_variable",
+        [](const vf::Tensor& initial_value, const std::string& name) {
+            return vf::default_graph().make_variable(initial_value, name);
+        }, py::arg("initial_value"), py::arg("name") = "");
+
+    // variable_assign: imperatively update a Variable's current value.
+    // Typically called by the optimizer after computing gradients.
+    // Raises RuntimeError if `variable` is not a Variable node.
+    m.def("variable_assign",
+        [](vf::NodeRef variable, const vf::Tensor& value) {
+            auto* var_op = dynamic_cast<vf::VariableOp*>(variable->op().get());
+            if (!var_op)
+                throw std::runtime_error(
+                    "variable_assign: node '" + variable->name() +
+                    "' is not a Variable");
+            var_op->assign(value);
+        }, py::arg("variable"), py::arg("value"));
+
+    // global_variables_initializer: returns a NodeRef that, when passed to
+    // sess.run(), resets all variables to their initial values.
+    // Snapshot is taken at the time of this call — add all variables first.
+    m.def("global_variables_initializer",
+        [](const std::string& name) {
+            return vf::default_graph().make_init_variables(name);
+        }, py::arg("name") = "");
+
     m.def("reset_default_graph", &vf::reset_default_graph);
 
     m.def("gradients",
