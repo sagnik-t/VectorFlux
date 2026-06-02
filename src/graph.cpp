@@ -40,6 +40,20 @@ Tensor OnesLikeOp::forward(const std::vector<Tensor>& in) const {
     return Tensor(src.shape(), std::move(ones_data), src.device());
 }
 
+// ── T11: InitVariablesOp forward ─────────────────────────────────────────────
+//
+// Iterates the variable NodeRefs captured at construction time and calls
+// initialize() on each VariableOp.  Returns a dummy scalar so Session.run()
+// has a valid Tensor to hand back to the caller.
+
+Tensor InitVariablesOp::forward(const std::vector<Tensor>&) const {
+    for (const auto& var_node : variables_) {
+        auto* var_op = dynamic_cast<VariableOp*>(var_node->op().get());
+        if (var_op) var_op->initialize();
+    }
+    return Tensor({1}, {0.0f});   // dummy; callers typically ignore this
+}
+
 // ── Backward pass (gradient graph construction) ───────────────────────────────
 //
 // Each gradient() call wires new nodes into the default graph.
@@ -161,12 +175,39 @@ NodeRef Graph::make_oneslike(NodeRef a, std::string name) {
     return register_node(std::make_shared<OnesLikeOp>(), {a}, "OnesLike", name);
 }
 
+// ── T11: new graph factory methods ───────────────────────────────────────────
+
+NodeRef Graph::make_placeholder(std::vector<int64_t> shape, std::string name) {
+    return register_node(
+        std::make_shared<PlaceholderOp>(std::move(shape)), {}, "Placeholder", name);
+}
+
+NodeRef Graph::make_variable(Tensor initial_value, std::string name) {
+    auto node = register_node(
+        std::make_shared<VariableOp>(initial_value), {}, "Variable", name);
+    variables_.push_back(node);
+    return node;
+}
+
+NodeRef Graph::make_init_variables(std::string name) {
+    // Snapshot the variable list at the time of this call.
+    // Variables created afterwards are not included — consistent with TF1.
+    return register_node(
+        std::make_shared<InitVariablesOp>(variables_),
+        {},
+        "InitVariables",
+        name.empty() ? "init_variables" : name);
+}
+
+// ── Graph lifecycle ───────────────────────────────────────────────────────────
+
 void Graph::reset_values() {
     for (auto& n : nodes_) n->reset();
 }
 
 void Graph::clear() {
     nodes_.clear();
+    variables_.clear();   // must be cleared alongside nodes_
     next_id_ = 0;
 }
 
