@@ -11,40 +11,41 @@ namespace vf {
 //   Tensor y = vf::relu(vf::matmul(W, x));
 //
 // Shapes
-//   add / mul   : a.shape == b.shape          (element-wise, no broadcasting)
-//   relu        : any shape
-//   matmul      : a=[M,K], b=[K,N] → [M,N]   (2-D only for now)
+//   add / mul       : a.shape == b.shape        (element-wise, no broadcasting)
+//   relu / step     : any shape
+//   matmul          : a=[M,K], b=[K,N] → [M,N]  (2-D only)
+//   transpose       : a=[M,N]          → [N,M]  (2-D only)
 //
 // Device rules
-//   Both inputs must be on the same device.
+//   Binary ops: both inputs must be on the same device.
 
-Tensor add   (const Tensor& a, const Tensor& b);
-Tensor mul   (const Tensor& a, const Tensor& b);
-Tensor relu  (const Tensor& a);
-Tensor matmul(const Tensor& a, const Tensor& b);
+Tensor add      (const Tensor& a, const Tensor& b);
+Tensor mul      (const Tensor& a, const Tensor& b);
+Tensor relu     (const Tensor& a);
+Tensor matmul   (const Tensor& a, const Tensor& b);
+Tensor step     (const Tensor& a);   // Heaviside: (x > 0) ? 1 : 0
+Tensor transpose(const Tensor& a);   // 2-D matrix transpose
 
-// ── cpu:: — host implementations (used by the dispatch layer) ─────────────────
-//
-// External callers should prefer the top-level vf:: functions.
-// These are exposed mainly so tests can target the CPU path directly.
+// ── cpu:: — host implementations ──────────────────────────────────────────────
 
 namespace cpu {
-    Tensor add   (const Tensor& a, const Tensor& b);
-    Tensor mul   (const Tensor& a, const Tensor& b);
-    Tensor relu  (const Tensor& a);
-    Tensor matmul(const Tensor& a, const Tensor& b);
+    Tensor add      (const Tensor& a, const Tensor& b);
+    Tensor mul      (const Tensor& a, const Tensor& b);
+    Tensor relu     (const Tensor& a);
+    Tensor matmul   (const Tensor& a, const Tensor& b);
+    Tensor step     (const Tensor& a);
+    Tensor transpose(const Tensor& a);
 }  // namespace cpu
 
-// ── cuda:: — device implementations (T06: add/mul/relu; T07: matmul) ─────────
-//
-// Defined in src/ops_cuda.cu, compiled by nvcc.
-// The dispatch layer in ops_cpu.cpp calls these after verifying device.
+// ── cuda:: — device implementations ──────────────────────────────────────────
 
 namespace cuda {
-    Tensor add   (const Tensor& a, const Tensor& b);
-    Tensor mul   (const Tensor& a, const Tensor& b);
-    Tensor relu  (const Tensor& a);
-    Tensor matmul(const Tensor& a, const Tensor& b);  // T07: cuBLAS
+    Tensor add      (const Tensor& a, const Tensor& b);
+    Tensor mul      (const Tensor& a, const Tensor& b);
+    Tensor relu     (const Tensor& a);
+    Tensor matmul   (const Tensor& a, const Tensor& b);
+    Tensor step     (const Tensor& a);
+    Tensor transpose(const Tensor& a);
 }  // namespace cuda
 
 }  // namespace vf
