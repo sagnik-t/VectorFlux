@@ -96,7 +96,6 @@ Tensor step(const Tensor& a) {
 }
 
 // ── T13: sigmoid ─────────────────────────────────────────────────────────────
-// sigma(x) = 1 / (1 + exp(-x))
 Tensor sigmoid(const Tensor& a) {
     const int64_t n  = a.numel();
     Tensor        out(a.shape());
@@ -146,18 +145,15 @@ Tensor softmax(const Tensor& a) {
         float*        pc = out.data();
 
         for (int64_t j = 0; j < N; ++j) {
-            // Find column max
-            float max_val = pa[j];                          // row 0, col j
+            float max_val = pa[j];
             for (int64_t i = 1; i < C; ++i)
                 max_val = std::max(max_val, pa[i * N + j]);
 
-            // Exp and sum
             float sum = 0.0f;
             for (int64_t i = 0; i < C; ++i) {
                 pc[i * N + j] = std::exp(pa[i * N + j] - max_val);
                 sum           += pc[i * N + j];
             }
-            // Normalise
             for (int64_t i = 0; i < C; ++i)
                 pc[i * N + j] /= sum;
         }
@@ -217,6 +213,124 @@ Tensor transpose(const Tensor& a) {
     for (int64_t i = 0; i < M; ++i)
         for (int64_t j = 0; j < N; ++j)
             pc[j * M + i] = pa[i * N + j];
+    return out;
+}
+
+// ── T14: reduce_sum ───────────────────────────────────────────────────────────
+// Sum all elements → [1] scalar tensor.
+Tensor reduce_sum(const Tensor& a) {
+    const int64_t n  = a.numel();
+    const float*  pa = a.data();
+    float         s  = 0.0f;
+    for (int64_t i = 0; i < n; ++i) s += pa[i];
+    return Tensor({1}, {s});
+}
+
+// ── T14: reduce_mean ──────────────────────────────────────────────────────────
+// Mean of all elements → [1] scalar tensor.
+Tensor reduce_mean(const Tensor& a) {
+    const int64_t n  = a.numel();
+    const float*  pa = a.data();
+    float         s  = 0.0f;
+    for (int64_t i = 0; i < n; ++i) s += pa[i];
+    return Tensor({1}, {s / static_cast<float>(n)});
+}
+
+// ── T14: softmax_cross_entropy_with_logits ────────────────────────────────────
+// logits: [C, N]  labels: [C, N]  →  [1] scalar (mean CE over N samples).
+// L = -mean_j  sum_c  labels[c,j] * log_softmax(logits[:,j])_c
+//   = mean_j  (log_sum_exp(logits[:,j]) - dot(labels[:,j], logits[:,j]))
+// Uses log-sum-exp trick for numerical stability.
+Tensor softmax_cross_entropy_with_logits(const Tensor& logits,
+                                          const Tensor& labels) {
+    if (logits.ndim() != 2)
+        throw std::invalid_argument(
+            "softmax_cross_entropy_with_logits: logits must be 2-D [C, N]");
+    check_same_shape(logits, labels, "softmax_cross_entropy_with_logits");
+
+    const int64_t C  = logits.shape()[0];
+    const int64_t N  = logits.shape()[1];
+    const float*  pl = logits.data();
+    const float*  py = labels.data();
+
+    float total = 0.0f;
+    for (int64_t j = 0; j < N; ++j) {
+        // log-sum-exp for column j
+        float max_val = pl[j];
+        for (int64_t i = 1; i < C; ++i)
+            max_val = std::max(max_val, pl[i * N + j]);
+
+        float sum_exp = 0.0f;
+        for (int64_t i = 0; i < C; ++i)
+            sum_exp += std::exp(pl[i * N + j] - max_val);
+        float log_sum_exp = std::log(sum_exp) + max_val;
+
+        // dot(labels[:,j], logits[:,j])
+        float dot = 0.0f;
+        for (int64_t i = 0; i < C; ++i)
+            dot += py[i * N + j] * pl[i * N + j];
+
+        total += log_sum_exp - dot;
+    }
+    return Tensor({1}, {total / static_cast<float>(N)});
+}
+
+// ── T14: reduce_sum_grad ──────────────────────────────────────────────────────
+// dL/dinput_i = g  (broadcast scalar to input shape)
+Tensor reduce_sum_grad(const Tensor& input, const Tensor& g_scalar) {
+    const int64_t n   = input.numel();
+    const float   g   = g_scalar.data()[0];
+    Tensor        out(input.shape());
+    float*        po  = out.data();
+    for (int64_t i = 0; i < n; ++i) po[i] = g;
+    return out;
+}
+
+// ── T14: reduce_mean_grad ─────────────────────────────────────────────────────
+// dL/dinput_i = g / N  (scaled broadcast)
+Tensor reduce_mean_grad(const Tensor& input, const Tensor& g_scalar) {
+    const int64_t n     = input.numel();
+    const float   scale = g_scalar.data()[0] / static_cast<float>(n);
+    Tensor        out(input.shape());
+    float*        po    = out.data();
+    for (int64_t i = 0; i < n; ++i) po[i] = scale;
+    return out;
+}
+
+// ── T14: softmax_ce_grad ──────────────────────────────────────────────────────
+// dL/dlogits = (softmax(logits) - labels) * g / N
+// Shape: [C, N]  (same as logits)
+Tensor softmax_ce_grad(const Tensor& logits, const Tensor& labels,
+                        const Tensor& g_scalar) {
+    if (logits.ndim() != 2)
+        throw std::invalid_argument("softmax_ce_grad: logits must be 2-D");
+
+    const int64_t C     = logits.shape()[0];
+    const int64_t N     = logits.shape()[1];
+    const float*  pl    = logits.data();
+    const float*  py    = labels.data();
+    const float   scale = g_scalar.data()[0] / static_cast<float>(N);
+
+    // Compute softmax of logits (reuse existing cpu::softmax)
+    Tensor sm  = cpu::softmax(logits);
+    const float* ps = sm.data();
+
+    Tensor out(logits.shape());
+    float* po  = out.data();
+    const int64_t total = C * N;
+    for (int64_t i = 0; i < total; ++i)
+        po[i] = (ps[i] - py[i]) * scale;
+    return out;
+}
+
+// ── T14: neg ─────────────────────────────────────────────────────────────────
+// Negate all elements — used in SubOp::gradient.
+Tensor neg(const Tensor& a) {
+    const int64_t n  = a.numel();
+    Tensor        out(a.shape());
+    const float*  pa = a.data();
+    float*        pc = out.data();
+    for (int64_t i = 0; i < n; ++i) pc[i] = -pa[i];
     return out;
 }
 
@@ -296,6 +410,51 @@ Tensor transpose(const Tensor& a) {
     }
     if (a.device() == Device::CPU) return cpu::transpose(a);
     return cuda::transpose(a);
+}
+
+// ── T14 dispatch ──────────────────────────────────────────────────────────────
+
+Tensor reduce_sum(const Tensor& a) {
+    if (a.device() == Device::CPU) return cpu::reduce_sum(a);
+    return cuda::reduce_sum(a);
+}
+
+Tensor reduce_mean(const Tensor& a) {
+    if (a.device() == Device::CPU) return cpu::reduce_mean(a);
+    return cuda::reduce_mean(a);
+}
+
+Tensor softmax_cross_entropy_with_logits(const Tensor& logits,
+                                          const Tensor& labels) {
+    check_same_device(logits, labels);
+    check_same_shape(logits, labels, "softmax_cross_entropy_with_logits");
+    if (logits.device() == Device::CPU)
+        return cpu::softmax_cross_entropy_with_logits(logits, labels);
+    return cuda::softmax_cross_entropy_with_logits(logits, labels);
+}
+
+Tensor reduce_sum_grad(const Tensor& input, const Tensor& g_scalar) {
+    if (input.device() == Device::CPU)
+        return cpu::reduce_sum_grad(input, g_scalar);
+    return cuda::reduce_sum_grad(input, g_scalar);
+}
+
+Tensor reduce_mean_grad(const Tensor& input, const Tensor& g_scalar) {
+    if (input.device() == Device::CPU)
+        return cpu::reduce_mean_grad(input, g_scalar);
+    return cuda::reduce_mean_grad(input, g_scalar);
+}
+
+Tensor softmax_ce_grad(const Tensor& logits, const Tensor& labels,
+                        const Tensor& g_scalar) {
+    if (logits.device() == Device::CPU)
+        return cpu::softmax_ce_grad(logits, labels, g_scalar);
+    return cuda::softmax_ce_grad(logits, labels, g_scalar);
+}
+
+Tensor neg(const Tensor& a) {
+    if (a.device() == Device::CPU) return cpu::neg(a);
+    return cuda::neg(a);
 }
 
 }  // namespace vf
