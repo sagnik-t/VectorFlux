@@ -78,14 +78,28 @@ PYBIND11_MODULE(_core, m) {
 
         .def("__repr__", &vf::Tensor::to_string);
 
+    // ── Eager tensor ops ──────────────────────────────────────────────────────
+
     m.def("add",
         [](const vf::Tensor& a, const vf::Tensor& b) { return vf::add(a, b); },
         py::arg("a"), py::arg("b"));
     m.def("mul",
         [](const vf::Tensor& a, const vf::Tensor& b) { return vf::mul(a, b); },
         py::arg("a"), py::arg("b"));
+    m.def("sub",                                                             // T13
+        [](const vf::Tensor& a, const vf::Tensor& b) { return vf::sub(a, b); },
+        py::arg("a"), py::arg("b"));
     m.def("relu",
         [](const vf::Tensor& a) { return vf::relu(a); },
+        py::arg("a"));
+    m.def("sigmoid",                                                         // T13
+        [](const vf::Tensor& a) { return vf::sigmoid(a); },
+        py::arg("a"));
+    m.def("tanh",                                                            // T13
+        [](const vf::Tensor& a) { return vf::tanh(a); },
+        py::arg("a"));
+    m.def("softmax",                                                         // T13
+        [](const vf::Tensor& a) { return vf::softmax(a); },
         py::arg("a"));
     m.def("matmul",
         [](const vf::Tensor& a, const vf::Tensor& b) { return vf::matmul(a, b); },
@@ -97,6 +111,8 @@ PYBIND11_MODULE(_core, m) {
         [](const vf::Tensor& a) { return vf::transpose(a); },
         py::arg("a"));
 
+    // ── Node ──────────────────────────────────────────────────────────────────
+
     py::class_<vf::Node, vf::NodeRef>(m, "Node")
         .def_property_readonly("name",      &vf::Node::name)
         .def_property_readonly("type",      &vf::Node::type)
@@ -107,6 +123,8 @@ PYBIND11_MODULE(_core, m) {
                    ", name=" + n.name() +
                    ", inputs=" + std::to_string(n.inputs().size()) + ")";
         });
+
+    // ── Graph builders ────────────────────────────────────────────────────────
 
     m.def("make_const",
         [](const vf::Tensor& t, const std::string& name) {
@@ -120,9 +138,25 @@ PYBIND11_MODULE(_core, m) {
         [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
             return vf::default_graph().make_mul(a, b, name);
         }, py::arg("a"), py::arg("b"), py::arg("name") = "");
+    m.def("make_sub",                                                        // T13
+        [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
+            return vf::default_graph().make_sub(a, b, name);
+        }, py::arg("a"), py::arg("b"), py::arg("name") = "");
     m.def("make_relu",
         [](vf::NodeRef a, const std::string& name) {
             return vf::default_graph().make_relu(a, name);
+        }, py::arg("a"), py::arg("name") = "");
+    m.def("make_sigmoid",                                                    // T13
+        [](vf::NodeRef a, const std::string& name) {
+            return vf::default_graph().make_sigmoid(a, name);
+        }, py::arg("a"), py::arg("name") = "");
+    m.def("make_tanh",                                                       // T13
+        [](vf::NodeRef a, const std::string& name) {
+            return vf::default_graph().make_tanh(a, name);
+        }, py::arg("a"), py::arg("name") = "");
+    m.def("make_softmax",                                                    // T13
+        [](vf::NodeRef a, const std::string& name) {
+            return vf::default_graph().make_softmax(a, name);
         }, py::arg("a"), py::arg("name") = "");
     m.def("make_matmul",
         [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
@@ -143,21 +177,16 @@ PYBIND11_MODULE(_core, m) {
 
     // ── T11: Placeholder, Variable, global_variables_initializer ─────────────
 
-    // make_placeholder: declare an input slot that must be fed at run time.
     m.def("make_placeholder",
         [](std::vector<int64_t> shape, const std::string& name) {
             return vf::default_graph().make_placeholder(std::move(shape), name);
         }, py::arg("shape"), py::arg("name") = "");
 
-    // make_variable: create a trainable parameter node with an initial value.
     m.def("make_variable",
         [](const vf::Tensor& initial_value, const std::string& name) {
             return vf::default_graph().make_variable(initial_value, name);
         }, py::arg("initial_value"), py::arg("name") = "");
 
-    // variable_assign: imperatively update a Variable's current value.
-    // Typically called by the optimizer after computing gradients.
-    // Raises RuntimeError if `variable` is not a Variable node.
     m.def("variable_assign",
         [](vf::NodeRef variable, const vf::Tensor& value) {
             auto* var_op = dynamic_cast<vf::VariableOp*>(variable->op().get());
@@ -168,9 +197,6 @@ PYBIND11_MODULE(_core, m) {
             var_op->assign(value);
         }, py::arg("variable"), py::arg("value"));
 
-    // global_variables_initializer: returns a NodeRef that, when passed to
-    // sess.run(), resets all variables to their initial values.
-    // Snapshot is taken at the time of this call — add all variables first.
     m.def("global_variables_initializer",
         [](const std::string& name) {
             return vf::default_graph().make_init_variables(name);
