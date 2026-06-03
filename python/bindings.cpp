@@ -86,19 +86,19 @@ PYBIND11_MODULE(_core, m) {
     m.def("mul",
         [](const vf::Tensor& a, const vf::Tensor& b) { return vf::mul(a, b); },
         py::arg("a"), py::arg("b"));
-    m.def("sub",                                                             // T13
+    m.def("sub",
         [](const vf::Tensor& a, const vf::Tensor& b) { return vf::sub(a, b); },
         py::arg("a"), py::arg("b"));
     m.def("relu",
         [](const vf::Tensor& a) { return vf::relu(a); },
         py::arg("a"));
-    m.def("sigmoid",                                                         // T13
+    m.def("sigmoid",
         [](const vf::Tensor& a) { return vf::sigmoid(a); },
         py::arg("a"));
-    m.def("tanh",                                                            // T13
+    m.def("tanh",
         [](const vf::Tensor& a) { return vf::tanh(a); },
         py::arg("a"));
-    m.def("softmax",                                                         // T13
+    m.def("softmax",
         [](const vf::Tensor& a) { return vf::softmax(a); },
         py::arg("a"));
     m.def("matmul",
@@ -109,6 +109,15 @@ PYBIND11_MODULE(_core, m) {
         py::arg("a"));
     m.def("transpose",
         [](const vf::Tensor& a) { return vf::transpose(a); },
+        py::arg("a"));
+
+    // ── T14: eager reduction ops ──────────────────────────────────────────────
+
+    m.def("reduce_sum",
+        [](const vf::Tensor& a) { return vf::reduce_sum(a); },
+        py::arg("a"));
+    m.def("reduce_mean",
+        [](const vf::Tensor& a) { return vf::reduce_mean(a); },
         py::arg("a"));
 
     // ── Node ──────────────────────────────────────────────────────────────────
@@ -138,7 +147,7 @@ PYBIND11_MODULE(_core, m) {
         [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
             return vf::default_graph().make_mul(a, b, name);
         }, py::arg("a"), py::arg("b"), py::arg("name") = "");
-    m.def("make_sub",                                                        // T13
+    m.def("make_sub",
         [](vf::NodeRef a, vf::NodeRef b, const std::string& name) {
             return vf::default_graph().make_sub(a, b, name);
         }, py::arg("a"), py::arg("b"), py::arg("name") = "");
@@ -146,15 +155,15 @@ PYBIND11_MODULE(_core, m) {
         [](vf::NodeRef a, const std::string& name) {
             return vf::default_graph().make_relu(a, name);
         }, py::arg("a"), py::arg("name") = "");
-    m.def("make_sigmoid",                                                    // T13
+    m.def("make_sigmoid",
         [](vf::NodeRef a, const std::string& name) {
             return vf::default_graph().make_sigmoid(a, name);
         }, py::arg("a"), py::arg("name") = "");
-    m.def("make_tanh",                                                       // T13
+    m.def("make_tanh",
         [](vf::NodeRef a, const std::string& name) {
             return vf::default_graph().make_tanh(a, name);
         }, py::arg("a"), py::arg("name") = "");
-    m.def("make_softmax",                                                    // T13
+    m.def("make_softmax",
         [](vf::NodeRef a, const std::string& name) {
             return vf::default_graph().make_softmax(a, name);
         }, py::arg("a"), py::arg("name") = "");
@@ -197,6 +206,17 @@ PYBIND11_MODULE(_core, m) {
             var_op->assign(value);
         }, py::arg("variable"), py::arg("value"));
 
+    // ── T14: read current variable value (for optimizer updates) ─────────────
+    m.def("variable_get_value",
+        [](vf::NodeRef variable) -> vf::Tensor {
+            auto* var_op = dynamic_cast<vf::VariableOp*>(variable->op().get());
+            if (!var_op)
+                throw std::runtime_error(
+                    "variable_get_value: node '" + variable->name() +
+                    "' is not a Variable");
+            return var_op->value();
+        }, py::arg("variable"));
+
     m.def("global_variables_initializer",
         [](const std::string& name) {
             return vf::default_graph().make_init_variables(name);
@@ -209,6 +229,24 @@ PYBIND11_MODULE(_core, m) {
             return vf::gradients(ys, xs);
         },
         py::arg("ys"), py::arg("xs"));
+
+    // ── T14: graph builders for reduction and loss ops ────────────────────────
+
+    m.def("make_reduce_sum",
+        [](vf::NodeRef a, const std::string& name) {
+            return vf::default_graph().make_reduce_sum(a, name);
+        }, py::arg("a"), py::arg("name") = "");
+
+    m.def("make_reduce_mean",
+        [](vf::NodeRef a, const std::string& name) {
+            return vf::default_graph().make_reduce_mean(a, name);
+        }, py::arg("a"), py::arg("name") = "");
+
+    m.def("make_softmax_cross_entropy_with_logits",
+        [](vf::NodeRef logits, vf::NodeRef labels, const std::string& name) {
+            return vf::default_graph().make_softmax_cross_entropy_with_logits(
+                logits, labels, name);
+        }, py::arg("logits"), py::arg("labels"), py::arg("name") = "");
 
     py::class_<vf::Session>(m, "Session")
         .def(py::init<>())
