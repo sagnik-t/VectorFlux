@@ -53,19 +53,60 @@ __global__ void relu_kernel(const float* a, float* out, int64_t n) {
 
 // ── Gradient-support kernels (T10) ────────────────────────────────────────────
 
-// Heaviside step: (x > 0) ? 1 : 0  — subgradient convention at x = 0 is 0.
 __global__ void step_kernel(const float* a, float* out, int64_t n) {
     int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < n) out[i] = a[i] > 0.0f ? 1.0f : 0.0f;
 }
 
-// Row-major 2-D transpose: A[M, N] → B[N, M]
-__global__ void transpose_kernel(const float* A, float* B,
-                                  int M, int N) {
+__global__ void transpose_kernel(const float* A, float* B, int M, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     if (row < M && col < N)
         B[col * M + row] = A[row * N + col];
+}
+
+// ── T13: new element-wise kernels ─────────────────────────────────────────────
+
+__global__ void sub_kernel(const float* a, const float* b, float* out,
+                            int64_t n) {
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = a[i] - b[i];
+}
+
+__global__ void sigmoid_kernel(const float* a, float* out, int64_t n) {
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = 1.0f / (1.0f + expf(-a[i]));
+}
+
+__global__ void tanh_kernel(const float* a, float* out, int64_t n) {
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = tanhf(a[i]);
+}
+
+// Softmax kernel: one thread per column (sample), sequential over C classes.
+// Input layout: row-major [C, N] — element (i, j) at index i*N + j.
+// Normalises each column j independently (axis 0), numerically stable.
+__global__ void softmax_kernel(const float* in, float* out, int C, int N) {
+    int j = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (j >= N) return;
+
+    // Find column max
+    float max_val = in[j];
+    for (int i = 1; i < C; ++i) {
+        float v = in[i * N + j];
+        if (v > max_val) max_val = v;
+    }
+
+    // Compute exp(x - max) and sum
+    float sum = 0.0f;
+    for (int i = 0; i < C; ++i) {
+        out[i * N + j] = expf(in[i * N + j] - max_val);
+        sum            += out[i * N + j];
+    }
+
+    // Normalise
+    for (int i = 0; i < C; ++i)
+        out[i * N + j] /= sum;
 }
 
 // ── CUDA namespace implementations ────────────────────────────────────────────
@@ -115,12 +156,45 @@ Tensor relu(const Tensor& a) {
     return elementwise_unary(a.cuda_data(), a.shape(), a.numel(), relu_kernel);
 }
 
+// ── T13: sub, sigmoid, tanh, softmax ─────────────────────────────────────────
+
+Tensor sub(const Tensor& a, const Tensor& b) {
+    return elementwise_binary(a.cuda_data(), b.cuda_data(),
+                               a.shape(), a.numel(), sub_kernel);
+}
+
+Tensor sigmoid(const Tensor& a) {
+    return elementwise_unary(a.cuda_data(), a.shape(), a.numel(), sigmoid_kernel);
+}
+
+Tensor tanh(const Tensor& a) {
+    return elementwise_unary(a.cuda_data(), a.shape(), a.numel(), tanh_kernel);
+}
+
+Tensor softmax(const Tensor& a) {
+    // Treat 1-D [C] as [C, 1] so the column-based kernel handles it uniformly.
+    int C, N;
+    if (a.ndim() == 1) {
+        C = static_cast<int>(a.shape()[0]);
+        N = 1;
+    } else if (a.ndim() == 2) {
+        C = static_cast<int>(a.shape()[0]);
+        N = static_cast<int>(a.shape()[1]);
+    } else {
+        throw std::runtime_error(
+            "softmax: expected 1-D or 2-D tensor (got ndim=" +
+            std::to_string(a.ndim()) + ")");
+    }
+
+    Tensor out(a.shape(), Device::CUDA);
+    const int threads = 256;
+    const int blocks  = (N + threads - 1) / threads;
+    softmax_kernel<<<blocks, threads>>>(a.cuda_data(), out.cuda_data(), C, N);
+    cuda_check(cudaDeviceSynchronize(), "softmax sync");
+    return out;
+}
+
 // ── T07: cuBLAS matmul ────────────────────────────────────────────────────────
-//
-// Row-major trick: treating a row-major A[M,K] as a column-major matrix gives
-// A^T[K,M].  cuBLAS computes (in col-major notation):
-//   C_col = B_col * A_col   ≡   C_row = A_row @ B_row
-// Call signature (N, M, K) with B leading A in the argument list.
 
 Tensor matmul(const Tensor& a, const Tensor& b) {
     const int M = static_cast<int>(a.shape()[0]);
@@ -137,8 +211,8 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
                     CUBLAS_OP_N, CUBLAS_OP_N,
                     N, M, K,
                     &alpha,
-                    b.cuda_data(), N,   // B (row-major) → treated as B^T col-major
-                    a.cuda_data(), K,   // A (row-major) → treated as A^T col-major
+                    b.cuda_data(), N,
+                    a.cuda_data(), K,
                     &beta,
                     out.cuda_data(), N),
         "cublasSgemm");
