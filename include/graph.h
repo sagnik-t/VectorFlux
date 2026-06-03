@@ -55,12 +55,13 @@ public:
 
 // ── T13: SubOp ───────────────────────────────────────────────────────────────
 // Element-wise subtraction: out = a - b.
-// Used internally by SigmoidOp::gradient and TanhOp::gradient.
-// Gradient not needed for first-order SGD (Sub only appears in backward graphs).
+// gradient: dL/da = g,  dL/db = -g  (via NegOp)
 class SubOp : public Op {
 public:
     std::string type_name() const override { return "Sub"; }
     Tensor forward(const std::vector<Tensor>& in) const override;
+    std::vector<NodeRef> gradient(const NodeRef& node,
+                                   const NodeRef& grad_in) const override;
 };
 
 class ReluOp : public Op {
@@ -75,7 +76,6 @@ public:
 // forward:  sigma(x) = 1 / (1 + exp(-x))
 // gradient: dL/dx = dL/dout * sigma(x) * (1 - sigma(x))
 //           Built as: mul(grad_in, mul(node, sub(oneslike(node), node)))
-//           where `node` is this sigmoid node whose output IS sigma(x).
 class SigmoidOp : public Op {
 public:
     std::string type_name() const override { return "Sigmoid"; }
@@ -98,9 +98,7 @@ public:
 
 // ── T13: SoftmaxOp ───────────────────────────────────────────────────────────
 // forward: exp(x) / sum(exp(x)) along axis 0 (numerically stable).
-// gradient: deferred to T14 where it is fused with cross-entropy loss.
-//           (Standalone softmax gradient requires sum-reduction; implement
-//            as softmax_cross_entropy in T14 for the MNIST use case.)
+// gradient: fused into SoftmaxCrossEntropyWithLogitsOp (T14).
 class SoftmaxOp : public Op {
 public:
     std::string type_name() const override { return "Softmax"; }
@@ -180,6 +178,84 @@ private:
     std::vector<NodeRef> variables_;
 };
 
+// ── T14: ReduceSumOp ─────────────────────────────────────────────────────────
+// forward:  scalar = sum of all elements in input
+// gradient: dL/dinput = fill(input.shape, g_scalar)
+//           Implemented by ReduceSumGradOp.
+class ReduceSumOp : public Op {
+public:
+    std::string type_name() const override { return "ReduceSum"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+    std::vector<NodeRef> gradient(const NodeRef& node,
+                                   const NodeRef& grad_in) const override;
+};
+
+// ── T14: ReduceSumGradOp (terminal) ──────────────────────────────────────────
+// inputs: [original_input, g_scalar]
+// forward: tensor with shape(original_input) filled with g_scalar[0]
+class ReduceSumGradOp : public Op {
+public:
+    std::string type_name() const override { return "ReduceSumGrad"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+};
+
+// ── T14: ReduceMeanOp ────────────────────────────────────────────────────────
+// forward:  scalar = mean of all elements in input
+// gradient: dL/dinput = fill(input.shape, g_scalar / N)
+//           Implemented by ReduceMeanGradOp.
+class ReduceMeanOp : public Op {
+public:
+    std::string type_name() const override { return "ReduceMean"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+    std::vector<NodeRef> gradient(const NodeRef& node,
+                                   const NodeRef& grad_in) const override;
+};
+
+// ── T14: ReduceMeanGradOp (terminal) ─────────────────────────────────────────
+// inputs: [original_input, g_scalar]
+// forward: tensor with shape(original_input) filled with g_scalar[0] / N
+class ReduceMeanGradOp : public Op {
+public:
+    std::string type_name() const override { return "ReduceMeanGrad"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+};
+
+// ── T14: SoftmaxCrossEntropyWithLogitsOp ─────────────────────────────────────
+// forward:  scalar = mean_N(-sum_C y_c * log softmax(l_c))
+//           Uses log-sum-exp trick for numerical stability.
+//           logits: [C, N]  labels: [C, N]  (one-hot per column)
+// gradient: dL/dlogits = SoftmaxCEGradOp(logits, labels, g_scalar)
+//           = (softmax(logits) - labels) * g_scalar / N
+//           No gradient through labels.
+class SoftmaxCrossEntropyWithLogitsOp : public Op {
+public:
+    std::string type_name() const override {
+        return "SoftmaxCrossEntropyWithLogits";
+    }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+    std::vector<NodeRef> gradient(const NodeRef& node,
+                                   const NodeRef& grad_in) const override;
+};
+
+// ── T14: SoftmaxCEGradOp (terminal) ──────────────────────────────────────────
+// inputs: [logits, labels, g_scalar]
+// forward: (softmax(logits) - labels) * g_scalar[0] / N
+class SoftmaxCEGradOp : public Op {
+public:
+    std::string type_name() const override { return "SoftmaxCEGrad"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+};
+
+// ── NegOp (gradient-support) ──────────────────────────────────────────────────
+// Negate all elements: out = -in[0].
+// Used in SubOp::gradient for dL/db = -grad_in.
+// Terminal — no higher-order gradient needed.
+class NegOp : public Op {
+public:
+    std::string type_name() const override { return "Neg"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+};
+
 // ── Node ──────────────────────────────────────────────────────────────────────
 
 class Node {
@@ -229,6 +305,19 @@ public:
     NodeRef make_step     (NodeRef a,               std::string name = "");
     NodeRef make_transpose(NodeRef a,               std::string name = "");
     NodeRef make_oneslike (NodeRef a,               std::string name = "");
+
+    // ── T14: reduction and loss ops ───────────────────────────────────────────
+    NodeRef make_reduce_sum (NodeRef a,                           std::string name = "");
+    NodeRef make_reduce_mean(NodeRef a,                           std::string name = "");
+    NodeRef make_softmax_cross_entropy_with_logits(NodeRef logits, NodeRef labels,
+                                                    std::string name = "");
+
+    // ── T14: gradient support ops (used internally by gradient() methods) ─────
+    NodeRef make_reduce_sum_grad (NodeRef input, NodeRef g_scalar, std::string name = "");
+    NodeRef make_reduce_mean_grad(NodeRef input, NodeRef g_scalar, std::string name = "");
+    NodeRef make_softmax_ce_grad (NodeRef logits, NodeRef labels, NodeRef g_scalar,
+                                   std::string name = "");
+    NodeRef make_neg(NodeRef a, std::string name = "");   // NegOp: -a
 
     void reset_values();
     void clear();

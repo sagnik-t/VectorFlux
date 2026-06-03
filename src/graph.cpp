@@ -62,6 +62,40 @@ Tensor InitVariablesOp::forward(const std::vector<Tensor>&) const {
     return Tensor({1}, {0.0f});
 }
 
+// ── T14: forward passes ───────────────────────────────────────────────────────
+
+Tensor ReduceSumOp::forward(const std::vector<Tensor>& in) const {
+    return vf::reduce_sum(in[0]);
+}
+
+Tensor ReduceSumGradOp::forward(const std::vector<Tensor>& in) const {
+    // in[0] = original input (for shape), in[1] = upstream scalar gradient
+    return vf::reduce_sum_grad(in[0], in[1]);
+}
+
+Tensor ReduceMeanOp::forward(const std::vector<Tensor>& in) const {
+    return vf::reduce_mean(in[0]);
+}
+
+Tensor ReduceMeanGradOp::forward(const std::vector<Tensor>& in) const {
+    // in[0] = original input (for shape and N), in[1] = upstream scalar gradient
+    return vf::reduce_mean_grad(in[0], in[1]);
+}
+
+Tensor SoftmaxCrossEntropyWithLogitsOp::forward(
+        const std::vector<Tensor>& in) const {
+    return vf::softmax_cross_entropy_with_logits(in[0], in[1]);
+}
+
+Tensor SoftmaxCEGradOp::forward(const std::vector<Tensor>& in) const {
+    // in[0] = logits, in[1] = labels, in[2] = upstream scalar gradient
+    return vf::softmax_ce_grad(in[0], in[1], in[2]);
+}
+
+Tensor NegOp::forward(const std::vector<Tensor>& in) const {
+    return vf::neg(in[0]);
+}
+
 // ── Backward pass ─────────────────────────────────────────────────────────────
 
 // add: dL/da = dL/dout,  dL/db = dL/dout
@@ -81,6 +115,12 @@ std::vector<NodeRef> MulOp::gradient(const NodeRef& node,
     };
 }
 
+// sub: dL/da = dL/dout,  dL/db = -dL/dout
+std::vector<NodeRef> SubOp::gradient(const NodeRef& /*node*/,
+                                      const NodeRef& grad_in) const {
+    return { grad_in, default_graph().make_neg(grad_in) };
+}
+
 // relu: dL/dx = dL/dout * step(x)
 std::vector<NodeRef> ReluOp::gradient(const NodeRef& node,
                                        const NodeRef& grad_in) const {
@@ -90,8 +130,6 @@ std::vector<NodeRef> ReluOp::gradient(const NodeRef& node,
 
 // sigmoid: dL/dx = dL/dout * sigma(x) * (1 - sigma(x))
 //   `node` IS the sigmoid node whose evaluated output == sigma(x).
-//   ones = oneslike(node),  one_minus_s = sub(ones, node)
-//   deriv = mul(node, one_minus_s)  → sigma(x) * (1 - sigma(x))
 std::vector<NodeRef> SigmoidOp::gradient(const NodeRef& node,
                                           const NodeRef& grad_in) const {
     auto& g = default_graph();
@@ -102,9 +140,6 @@ std::vector<NodeRef> SigmoidOp::gradient(const NodeRef& node,
 }
 
 // tanh: dL/dx = dL/dout * (1 - tanh(x)^2)
-//   t_sq = mul(node, node)  → tanh(x)^2
-//   ones = oneslike(node)
-//   deriv = sub(ones, t_sq) → 1 - tanh(x)^2
 std::vector<NodeRef> TanhOp::gradient(const NodeRef& node,
                                        const NodeRef& grad_in) const {
     auto& g = default_graph();
@@ -127,6 +162,37 @@ std::vector<NodeRef> MatMulOp::gradient(const NodeRef& node,
         default_graph().make_matmul(default_graph().make_transpose(a),
                                     grad_in)
     };
+}
+
+// ── T14: gradient() methods ───────────────────────────────────────────────────
+
+// reduce_sum: dL/dinput_i = g  for all i
+//   Uses ReduceSumGradOp to fill shape(input) with the upstream scalar.
+std::vector<NodeRef> ReduceSumOp::gradient(const NodeRef& node,
+                                             const NodeRef& grad_in) const {
+    const NodeRef& input = node->inputs()[0];
+    return { default_graph().make_reduce_sum_grad(input, grad_in) };
+}
+
+// reduce_mean: dL/dinput_i = g / N  for all i, where N = input.numel()
+//   Uses ReduceMeanGradOp to fill shape(input) with g/N.
+std::vector<NodeRef> ReduceMeanOp::gradient(const NodeRef& node,
+                                              const NodeRef& grad_in) const {
+    const NodeRef& input = node->inputs()[0];
+    return { default_graph().make_reduce_mean_grad(input, grad_in) };
+}
+
+// softmax_cross_entropy_with_logits:
+//   dL/dlogits = SoftmaxCEGradOp(logits, labels, g_scalar)
+//              = (softmax(logits) - labels) * g / N
+//   No gradient through labels (constant target).
+std::vector<NodeRef> SoftmaxCrossEntropyWithLogitsOp::gradient(
+        const NodeRef& node,
+        const NodeRef& grad_in) const {
+    const NodeRef& logits = node->inputs()[0];
+    const NodeRef& labels = node->inputs()[1];
+    auto dlogits = default_graph().make_softmax_ce_grad(logits, labels, grad_in);
+    return { dlogits, nullptr };   // nullptr → no gradient through labels
 }
 
 // ── Node ──────────────────────────────────────────────────────────────────────
@@ -236,6 +302,58 @@ NodeRef Graph::make_init_variables(std::string name) {
         "InitVariables",
         name.empty() ? "init_variables" : name);
 }
+
+// ── T14: factory methods ──────────────────────────────────────────────────────
+
+NodeRef Graph::make_reduce_sum(NodeRef a, std::string name) {
+    return register_node(std::make_shared<ReduceSumOp>(), {a}, "ReduceSum", name);
+}
+
+NodeRef Graph::make_reduce_mean(NodeRef a, std::string name) {
+    return register_node(std::make_shared<ReduceMeanOp>(), {a}, "ReduceMean", name);
+}
+
+NodeRef Graph::make_softmax_cross_entropy_with_logits(
+        NodeRef logits, NodeRef labels, std::string name) {
+    return register_node(
+        std::make_shared<SoftmaxCrossEntropyWithLogitsOp>(),
+        {logits, labels},
+        "SoftmaxCrossEntropyWithLogits",
+        name);
+}
+
+NodeRef Graph::make_reduce_sum_grad(NodeRef input, NodeRef g_scalar,
+                                     std::string name) {
+    return register_node(
+        std::make_shared<ReduceSumGradOp>(),
+        {input, g_scalar},
+        "ReduceSumGrad",
+        name);
+}
+
+NodeRef Graph::make_reduce_mean_grad(NodeRef input, NodeRef g_scalar,
+                                      std::string name) {
+    return register_node(
+        std::make_shared<ReduceMeanGradOp>(),
+        {input, g_scalar},
+        "ReduceMeanGrad",
+        name);
+}
+
+NodeRef Graph::make_softmax_ce_grad(NodeRef logits, NodeRef labels,
+                                     NodeRef g_scalar, std::string name) {
+    return register_node(
+        std::make_shared<SoftmaxCEGradOp>(),
+        {logits, labels, g_scalar},
+        "SoftmaxCEGrad",
+        name);
+}
+
+NodeRef Graph::make_neg(NodeRef a, std::string name) {
+    return register_node(std::make_shared<NegOp>(), {a}, "Neg", name);
+}
+
+// ── Graph lifecycle ───────────────────────────────────────────────────────────
 
 void Graph::reset_values() {
     for (auto& n : nodes_) n->reset();
