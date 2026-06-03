@@ -12,6 +12,9 @@ from ._core import (
     matmul   as _eager_matmul,
     step,
     transpose,
+    # T14: eager reductions
+    reduce_sum  as _eager_reduce_sum,
+    reduce_mean as _eager_reduce_mean,
     # Graph node type
     Node,
     # Low-level graph builders — kept for backward compat and internal use.
@@ -20,14 +23,45 @@ from ._core import (
     make_sigmoid, make_tanh, make_softmax,
     make_step, make_transpose, make_oneslike,
     make_placeholder, make_variable,
+    make_reduce_sum, make_reduce_mean,                  # T14
+    make_softmax_cross_entropy_with_logits,             # T14
     variable_assign,
+    variable_get_value,                                 # T14
     global_variables_initializer,
-    reset_default_graph,
+    reset_default_graph as _reset_graph_cpp,
     gradients as _core_gradients,
     Session   as _CppSession,
 )
 
 import numpy as np
+import weakref
+
+
+# ── Variable registry ─────────────────────────────────────────────────────────
+# Tracks live Variable objects so optimizers can auto-discover all parameters.
+
+_variable_registry: list = []
+
+
+def _register_variable(var) -> None:
+    _variable_registry.append(weakref.ref(var))
+
+
+def _get_all_variables() -> list:
+    """Return all currently live Variable objects in this graph scope."""
+    live = [r() for r in _variable_registry if r() is not None]
+    return live
+
+
+def _clear_variable_registry() -> None:
+    global _variable_registry
+    _variable_registry = []
+
+
+def reset_default_graph() -> None:
+    """Clear the C++ graph and the Python variable registry."""
+    _reset_graph_cpp()
+    _clear_variable_registry()
 
 
 # ── placeholder ───────────────────────────────────────────────────────────────
@@ -42,7 +76,8 @@ def placeholder(shape, name=""):
 class Variable:
     """
     A trainable parameter.  Wraps a Variable graph node and exposes:
-      - .assign(value)    — update the stored value (accepts Tensor or ndarray)
+      - .assign(value)  — update the stored value (accepts Tensor or ndarray)
+      - .numpy           — current value as a numpy array
       - .name / .type / .inputs / .evaluated — mirrors the Node interface
 
     Can be passed anywhere a NodeRef is expected in the graph API.
@@ -57,6 +92,7 @@ class Variable:
         if not isinstance(initial_value, Tensor):
             initial_value = Tensor(np.asarray(initial_value, dtype=np.float32))
         self._node = make_variable(initial_value, name)
+        _register_variable(self)
 
     @property
     def name(self):      return self._node.name
@@ -67,10 +103,18 @@ class Variable:
     @property
     def evaluated(self): return self._node.evaluated
 
+    @property
+    def numpy(self) -> np.ndarray:
+        """Current parameter values as a numpy array (always on CPU)."""
+        val = variable_get_value(self._node)
+        if val.device == "cuda":
+            val = val.to("cpu")
+        return val.to_numpy()
+
     def __repr__(self):
         return f"Variable(name={self.name})"
 
-    def assign(self, value):
+    def assign(self, value) -> None:
         """Update the variable's current value (accepts Tensor or numpy array)."""
         if not isinstance(value, Tensor):
             value = Tensor(np.asarray(value, dtype=np.float32))
@@ -89,6 +133,21 @@ def _unwrap(x):
 def _is_node(x):
     """True if x is a graph node (NodeRef or Variable)."""
     return isinstance(x, (Node, Variable))
+
+
+def _build_cpp_fd(feed_dict):
+    """Convert a Python feed_dict (Variable/Node → Tensor) to C++ format."""
+    cpp_fd = {}
+    for k, v in (feed_dict or {}).items():
+        cpp_fd[k._node if isinstance(k, Variable) else k] = v
+    return cpp_fd
+
+
+def _tensor_to_numpy(tensor) -> np.ndarray:
+    """Move to CPU if needed, then return numpy array."""
+    if tensor.device == "cuda":
+        tensor = tensor.to("cpu")
+    return tensor.to_numpy()
 
 
 # ── Overloaded graph / eager ops ──────────────────────────────────────────────
@@ -149,6 +208,22 @@ def matmul(a, b, name=""):
     return _eager_matmul(a, b)
 
 
+# ── T14: overloaded reduction ops ─────────────────────────────────────────────
+
+def reduce_sum(a, name=""):
+    """Sum all elements → scalar [1].  Symbolic or eager."""
+    if _is_node(a):
+        return make_reduce_sum(_unwrap(a), name)
+    return _eager_reduce_sum(a)
+
+
+def reduce_mean(a, name=""):
+    """Mean of all elements → scalar [1].  Symbolic or eager."""
+    if _is_node(a):
+        return make_reduce_mean(_unwrap(a), name)
+    return _eager_reduce_mean(a)
+
+
 # ── gradients ─────────────────────────────────────────────────────────────────
 
 def gradients(ys, xs):
@@ -156,26 +231,67 @@ def gradients(ys, xs):
     return _core_gradients(_unwrap(ys), [_unwrap(x) for x in xs])
 
 
+# ── TrainOp ───────────────────────────────────────────────────────────────────
+
+class TrainOp:
+    """
+    Returned by optimizer.minimize(loss).  Pass to sess.run() to execute one
+    training step: evaluates loss + gradients, applies variable updates,
+    and returns the loss Tensor.
+
+    Usage:
+        train_op = optimizer.minimize(loss)
+        for x_batch, y_batch in batches:
+            loss_val = sess.run(train_op, feed_dict={x: x_batch, y: y_batch})
+            print(loss_val.to_numpy()[0])
+    """
+
+    def __init__(self, loss_node, var_list, grad_nodes, optimizer):
+        self._loss_node  = _unwrap(loss_node)
+        self._vars       = var_list          # list of Python Variable objects
+        self._grad_nodes = [_unwrap(g) for g in grad_nodes]
+        self._optimizer  = optimizer
+        self._step       = 0
+
+    def _execute(self, sess, feed_dict=None) -> Tensor:
+        """Called by Session.run() when a TrainOp is passed as fetch."""
+        self._step += 1
+        cpp_fd   = _build_cpp_fd(feed_dict)
+        results  = sess._sess.run([self._loss_node] + self._grad_nodes, cpp_fd)
+        loss_val = results[0]
+
+        grad_numpy = [_tensor_to_numpy(results[i + 1])
+                      for i in range(len(self._vars))]
+
+        self._optimizer.apply_gradients(
+            list(zip(self._vars, grad_numpy)), self._step)
+        return loss_val
+
+
 # ── Session ───────────────────────────────────────────────────────────────────
 
 class Session:
     """
     TF1-style session.  Accepts Variable objects wherever a NodeRef is expected.
+    Also handles TrainOp: sess.run(train_op) executes a full training step.
 
     Usage:
         sess = vf.Session()
         result  = sess.run(output_node)
         results = sess.run([node_a, node_b])
         result  = sess.run(node, feed_dict={placeholder: value})
+        loss    = sess.run(train_op, feed_dict={x: batch_x, y: batch_y})
     """
 
     def __init__(self):
         self._sess = _CppSession()
 
     def run(self, fetches, feed_dict=None):
-        cpp_fd = {}
-        for k, v in (feed_dict or {}).items():
-            cpp_fd[k._node if isinstance(k, Variable) else k] = v
+        # TrainOp: evaluate + apply updates
+        if isinstance(fetches, TrainOp):
+            return fetches._execute(self, feed_dict)
+
+        cpp_fd = _build_cpp_fd(feed_dict)
 
         if isinstance(fetches, (list, tuple)):
             cpp_fetches = [f._node if isinstance(f, Variable) else f
@@ -246,22 +362,22 @@ class Dense:
 # ── vf.nn submodule ───────────────────────────────────────────────────────────
 
 class _nn:
-    """Neural-network activation ops as graph nodes.
-
-    Usage: vf.nn.relu(node), vf.nn.sigmoid(node), vf.nn.tanh(node),
-           vf.nn.softmax(node)
-    """
+    """Neural-network activation and loss ops as graph nodes."""
     @staticmethod
     def relu(a, name=""):    return relu(a, name)
 
     @staticmethod
-    def sigmoid(a, name=""): return sigmoid(a, name)    # T13
+    def sigmoid(a, name=""): return sigmoid(a, name)
 
     @staticmethod
-    def tanh(a, name=""):    return tanh(a, name)       # T13
+    def tanh(a, name=""):    return tanh(a, name)
 
     @staticmethod
-    def softmax(a, name=""): return softmax(a, name)    # T13
+    def softmax(a, name=""): return softmax(a, name)
+
+    @staticmethod
+    def softmax_cross_entropy(logits, labels, name=""):  # T14 alias
+        return losses.softmax_cross_entropy(logits, labels, name)
 
 
 nn = _nn()
@@ -270,14 +386,152 @@ nn = _nn()
 # ── vf.layers submodule ───────────────────────────────────────────────────────
 
 class _layers:
-    """Layer constructors.
-
-    Usage: vf.layers.Dense(input_dim, units, activation=vf.nn.relu)
-    """
+    """Layer constructors."""
     Dense = Dense
 
 
 layers = _layers()
+
+
+# ── vf.losses submodule ───────────────────────────────────────────────────────
+
+class _losses:
+    """
+    Loss functions that return a scalar (shape [1]) graph node.
+
+    vf.losses.mse(pred, target)
+        Mean squared error: reduce_mean((pred - target)^2)
+        pred and target must have the same shape.
+        Fully differentiable via autograd (no custom grad op needed).
+
+    vf.losses.softmax_cross_entropy(logits, labels)
+        Fused softmax + cross-entropy loss.
+        logits: [C, N]  labels: [C, N] one-hot
+        Returns mean CE over N samples.
+        Uses numerically stable log-sum-exp; custom gradient op.
+    """
+
+    @staticmethod
+    def mse(pred, labels, name=""):
+        """MSE loss: reduce_mean((pred - labels)^2)"""
+        diff = sub(pred, labels)
+        sq   = mul(diff, diff)
+        return reduce_mean(sq, name)
+
+    @staticmethod
+    def softmax_cross_entropy(logits, labels, name=""):
+        """
+        Fused softmax cross-entropy loss (numerically stable).
+        logits: [C, N]  labels: [C, N] one-hot
+        """
+        return make_softmax_cross_entropy_with_logits(
+            _unwrap(logits), _unwrap(labels), name)
+
+
+losses = _losses()
+
+
+# ── vf.train submodule ────────────────────────────────────────────────────────
+
+class GradientDescentOptimizer:
+    """
+    Vanilla SGD: w ← w - lr * grad
+
+    Usage:
+        optimizer = vf.train.GradientDescentOptimizer(learning_rate=0.01)
+        train_op  = optimizer.minimize(loss)
+        sess.run(train_op, feed_dict={...})
+    """
+
+    def __init__(self, learning_rate: float):
+        self.lr = learning_rate
+
+    def minimize(self, loss, var_list=None):
+        """
+        Build gradient nodes for all variables and return a TrainOp.
+
+        Parameters
+        ----------
+        loss     : graph node that evaluates to a scalar loss
+        var_list : list of Variable objects, or None to use all registered vars
+        """
+        if var_list is None:
+            var_list = _get_all_variables()
+        if not var_list:
+            raise RuntimeError(
+                "GradientDescentOptimizer.minimize: no variables found. "
+                "Pass var_list explicitly or create Variable objects before "
+                "calling minimize().")
+        grad_nodes = gradients(loss, var_list)
+        return TrainOp(loss, var_list, grad_nodes, self)
+
+    def apply_gradients(self, var_grad_pairs, step: int) -> None:
+        """Apply w ← w - lr * g for each (variable, gradient) pair."""
+        for var, grad_np in var_grad_pairs:
+            var.assign(var.numpy - self.lr * grad_np)
+
+
+class AdamOptimizer:
+    """
+    Adam optimizer: adaptive moment estimation.
+    Default hyperparameters from the original paper (Kingma & Ba, 2015).
+
+    Usage:
+        optimizer = vf.train.AdamOptimizer(learning_rate=0.001)
+        train_op  = optimizer.minimize(loss)
+        sess.run(train_op, feed_dict={...})
+    """
+
+    def __init__(self, learning_rate: float = 0.001,
+                 beta1: float = 0.9, beta2: float = 0.999,
+                 epsilon: float = 1e-8):
+        self.lr      = learning_rate
+        self.beta1   = beta1
+        self.beta2   = beta2
+        self.epsilon = epsilon
+        self._m: dict = {}   # first moment vectors  (keyed by id(Variable))
+        self._v: dict = {}   # second moment vectors
+
+    def minimize(self, loss, var_list=None):
+        """Build gradient nodes and return a TrainOp."""
+        if var_list is None:
+            var_list = _get_all_variables()
+        if not var_list:
+            raise RuntimeError(
+                "AdamOptimizer.minimize: no variables found. "
+                "Pass var_list explicitly or create Variable objects before "
+                "calling minimize().")
+        grad_nodes = gradients(loss, var_list)
+        return TrainOp(loss, var_list, grad_nodes, self)
+
+    def apply_gradients(self, var_grad_pairs, step: int) -> None:
+        """
+        Apply Adam update for each (variable, gradient) pair.
+        step is the 1-indexed step count provided by TrainOp.
+        """
+        for var, grad_np in var_grad_pairs:
+            vid = id(var)
+            if vid not in self._m:
+                self._m[vid] = np.zeros_like(grad_np)
+                self._v[vid] = np.zeros_like(grad_np)
+
+            self._m[vid] = self.beta1 * self._m[vid] + (1.0 - self.beta1) * grad_np
+            self._v[vid] = self.beta2 * self._v[vid] + (1.0 - self.beta2) * grad_np ** 2
+
+            m_hat = self._m[vid] / (1.0 - self.beta1 ** step)
+            v_hat = self._v[vid] / (1.0 - self.beta2 ** step)
+
+            update = self.lr * m_hat / (np.sqrt(v_hat) + self.epsilon)
+            var.assign(var.numpy - update)
+
+
+class _train:
+    """vf.train — optimizers."""
+    GradientDescentOptimizer = GradientDescentOptimizer
+    AdamOptimizer            = AdamOptimizer
+
+
+train = _train()
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -288,14 +542,18 @@ __all__ = [
     # Graph-building ops
     "placeholder",
     "add", "mul", "sub", "relu", "sigmoid", "tanh", "softmax", "matmul",
+    "reduce_sum", "reduce_mean",                        # T14
     # Submodules
-    "nn", "layers",
+    "nn", "layers", "losses", "train",                 # T14: losses, train
     # High-level layer
     "Dense",
-    # Training
+    # Training helpers
     "gradients",
     "variable_assign",
     "global_variables_initializer",
+    "TrainOp",                                         # T14
+    "GradientDescentOptimizer",                        # T14
+    "AdamOptimizer",                                   # T14
     # Session
     "Session",
     # Graph lifecycle
@@ -304,6 +562,8 @@ __all__ = [
     "make_const",
     "make_add", "make_mul", "make_sub", "make_relu", "make_matmul",
     "make_sigmoid", "make_tanh", "make_softmax",
+    "make_reduce_sum", "make_reduce_mean",             # T14
+    "make_softmax_cross_entropy_with_logits",          # T14
     "make_step", "make_transpose", "make_oneslike",
     "make_placeholder", "make_variable",
     # Eager-only ops
