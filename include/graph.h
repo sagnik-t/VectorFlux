@@ -13,26 +13,12 @@ class Node;
 using NodeRef = std::shared_ptr<Node>;
 
 // ── Op base class ─────────────────────────────────────────────────────────────
-//
-// Each Op subclass encapsulates one computation.  Session.run() calls
-// forward() after resolving all input values.  gradients() calls gradient()
-// when building the backward graph.
 
 class Op {
 public:
     virtual ~Op() = default;
-
-    // Human-readable name used in node names and repr, e.g. "Add", "MatMul".
     virtual std::string type_name() const = 0;
-
-    // Compute the output tensor from evaluated input tensors.
     virtual Tensor forward(const std::vector<Tensor>& inputs) const = 0;
-
-    // Build backward graph nodes.
-    // node     — the forward node (access node->inputs() for upstream NodeRefs)
-    // grad_in  — NodeRef carrying  dL / d(node.output)
-    // Returns one NodeRef per input of `node`, carrying dL / d(input_i).
-    // Default: no gradients (leaf/non-differentiable ops).
     virtual std::vector<NodeRef> gradient(
             const NodeRef& /*node*/,
             const NodeRef& /*grad_in*/) const {
@@ -42,13 +28,11 @@ public:
 
 // ── Concrete ops ──────────────────────────────────────────────────────────────
 
-// Leaf node that holds a fixed tensor value.
 class ConstOp : public Op {
 public:
     explicit ConstOp(Tensor value) : value_(std::move(value)) {}
     std::string type_name() const override { return "Const"; }
     Tensor forward(const std::vector<Tensor>&) const override { return value_; }
-    // No gradient: ConstOp has no inputs to differentiate through.
 private:
     Tensor value_;
 };
@@ -69,12 +53,58 @@ public:
                                    const NodeRef& grad_in) const override;
 };
 
+// ── T13: SubOp ───────────────────────────────────────────────────────────────
+// Element-wise subtraction: out = a - b.
+// Used internally by SigmoidOp::gradient and TanhOp::gradient.
+// Gradient not needed for first-order SGD (Sub only appears in backward graphs).
+class SubOp : public Op {
+public:
+    std::string type_name() const override { return "Sub"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+};
+
 class ReluOp : public Op {
 public:
     std::string type_name() const override { return "Relu"; }
     Tensor forward(const std::vector<Tensor>& in) const override;
     std::vector<NodeRef> gradient(const NodeRef& node,
                                    const NodeRef& grad_in) const override;
+};
+
+// ── T13: SigmoidOp ───────────────────────────────────────────────────────────
+// forward:  sigma(x) = 1 / (1 + exp(-x))
+// gradient: dL/dx = dL/dout * sigma(x) * (1 - sigma(x))
+//           Built as: mul(grad_in, mul(node, sub(oneslike(node), node)))
+//           where `node` is this sigmoid node whose output IS sigma(x).
+class SigmoidOp : public Op {
+public:
+    std::string type_name() const override { return "Sigmoid"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+    std::vector<NodeRef> gradient(const NodeRef& node,
+                                   const NodeRef& grad_in) const override;
+};
+
+// ── T13: TanhOp ──────────────────────────────────────────────────────────────
+// forward:  tanh(x)
+// gradient: dL/dx = dL/dout * (1 - tanh(x)^2)
+//           Built as: mul(grad_in, sub(oneslike(node), mul(node, node)))
+class TanhOp : public Op {
+public:
+    std::string type_name() const override { return "Tanh"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
+    std::vector<NodeRef> gradient(const NodeRef& node,
+                                   const NodeRef& grad_in) const override;
+};
+
+// ── T13: SoftmaxOp ───────────────────────────────────────────────────────────
+// forward: exp(x) / sum(exp(x)) along axis 0 (numerically stable).
+// gradient: deferred to T14 where it is fused with cross-entropy loss.
+//           (Standalone softmax gradient requires sum-reduction; implement
+//            as softmax_cross_entropy in T14 for the MNIST use case.)
+class SoftmaxOp : public Op {
+public:
+    std::string type_name() const override { return "Softmax"; }
+    Tensor forward(const std::vector<Tensor>& in) const override;
 };
 
 class MatMulOp : public Op {
@@ -86,27 +116,19 @@ public:
 };
 
 // ── Gradient-support ops ──────────────────────────────────────────────────────
-//
-// These are created by the backward pass; users rarely build them directly.
 
-// Element-wise Heaviside step:  out[i] = (in[i] > 0) ? 1 : 0
-// Used by ReluOp::gradient.
 class StepOp : public Op {
 public:
     std::string type_name() const override { return "Step"; }
     Tensor forward(const std::vector<Tensor>& in) const override;
 };
 
-// 2-D matrix transpose:  [M, N] → [N, M]
-// Used by MatMulOp::gradient.
 class TransposeOp : public Op {
 public:
     std::string type_name() const override { return "Transpose"; }
     Tensor forward(const std::vector<Tensor>& in) const override;
 };
 
-// Tensor of ones with the same shape (and device) as the input.
-// Used by gradients() to seed dL/dL = 1.
 class OnesLikeOp : public Op {
 public:
     std::string type_name() const override { return "OnesLike"; }
@@ -115,8 +137,6 @@ public:
 
 // ── T11: Placeholder and Variable ops ────────────────────────────────────────
 
-// Placeholder: shape is declared at build time; value is injected at run time
-// via feed_dict.  Calling forward() without a feed raises a clear error.
 class PlaceholderOp : public Op {
 public:
     explicit PlaceholderOp(std::vector<int64_t> shape)
@@ -131,10 +151,6 @@ private:
     std::vector<int64_t> shape_;
 };
 
-// Variable: trainable parameter with mutable state.
-//   forward()    — returns current_value_ (called by Session.run())
-//   assign(t)    — replaces current_value_ (called by optimizers)
-//   initialize() — resets current_value_ to initial_value_ (called by InitVariablesOp)
 class VariableOp : public Op {
 public:
     explicit VariableOp(Tensor initial_value)
@@ -142,32 +158,18 @@ public:
           current_value_(std::move(initial_value)) {}
 
     std::string type_name() const override { return "Variable"; }
-
-    // Returns the current value; does NOT modify any state (const-correct).
     Tensor forward(const std::vector<Tensor>&) const override {
         return current_value_;
     }
-
-    // Update the stored parameter (e.g. after an optimizer step).
     void assign(Tensor new_value) { current_value_ = std::move(new_value); }
-
-    // Reset to the value supplied at construction.
     void initialize() { current_value_ = initial_value_; }
-
     const Tensor& value() const { return current_value_; }
 
 private:
-    Tensor initial_value_;   // frozen copy for re-initialisation
-    Tensor current_value_;   // mutable working copy
+    Tensor initial_value_;
+    Tensor current_value_;
 };
 
-// InitVariablesOp: when executed by Session.run(), calls initialize() on every
-// Variable captured at construction time.  Returns a dummy scalar so it can
-// be passed to sess.run() like any other node.
-//
-// global_variables_initializer() creates one of these with a snapshot of the
-// graph's variable list at call time — variables added afterwards are not
-// included (consistent with TF1 behaviour).
 class InitVariablesOp : public Op {
 public:
     explicit InitVariablesOp(std::vector<NodeRef> variables)
@@ -211,17 +213,16 @@ public:
     NodeRef make_const    (Tensor value,                        std::string name = "");
     NodeRef make_add      (NodeRef a, NodeRef b,                std::string name = "");
     NodeRef make_mul      (NodeRef a, NodeRef b,                std::string name = "");
+    NodeRef make_sub      (NodeRef a, NodeRef b,                std::string name = "");  // T13
     NodeRef make_relu     (NodeRef a,                           std::string name = "");
+    NodeRef make_sigmoid  (NodeRef a,                           std::string name = "");  // T13
+    NodeRef make_tanh     (NodeRef a,                           std::string name = "");  // T13
+    NodeRef make_softmax  (NodeRef a,                           std::string name = "");  // T13
     NodeRef make_matmul   (NodeRef a, NodeRef b,                std::string name = "");
 
     // ── T11: trainable graph nodes ────────────────────────────────────────────
-    // make_placeholder: declare an input slot; fill it at run time via feed_dict.
     NodeRef make_placeholder(std::vector<int64_t> shape,        std::string name = "");
-    // make_variable: create a trainable parameter initialised to `initial_value`.
-    // The node is recorded in variables_ for global_variables_initializer().
     NodeRef make_variable   (Tensor initial_value,              std::string name = "");
-    // make_init_variables: snapshot the current variable list and return a node
-    // that, when run, resets all of them to their initial values.
     NodeRef make_init_variables(                                std::string name = "");
 
     // ── Gradient-support ops ──────────────────────────────────────────────────
@@ -230,7 +231,7 @@ public:
     NodeRef make_oneslike (NodeRef a,               std::string name = "");
 
     void reset_values();
-    void clear();   // also clears the variables_ list
+    void clear();
 
     const std::vector<NodeRef>& nodes()     const { return nodes_;     }
     const std::vector<NodeRef>& variables() const { return variables_; }
@@ -238,7 +239,7 @@ public:
 
 private:
     std::vector<NodeRef> nodes_;
-    std::vector<NodeRef> variables_;   // Variable nodes in insertion order
+    std::vector<NodeRef> variables_;
     int                  next_id_ = 0;
 
     NodeRef register_node(std::shared_ptr<Op>  op,

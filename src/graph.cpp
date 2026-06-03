@@ -6,7 +6,6 @@
 namespace vf {
 
 // ── Forward pass implementations ──────────────────────────────────────────────
-// Delegate to the eager dispatch layer in ops_cpu.cpp / ops_cuda.cu.
 
 Tensor AddOp::forward(const std::vector<Tensor>& in) const {
     return vf::add(in[0], in[1]);
@@ -16,8 +15,24 @@ Tensor MulOp::forward(const std::vector<Tensor>& in) const {
     return vf::mul(in[0], in[1]);
 }
 
+Tensor SubOp::forward(const std::vector<Tensor>& in) const {
+    return vf::sub(in[0], in[1]);
+}
+
 Tensor ReluOp::forward(const std::vector<Tensor>& in) const {
     return vf::relu(in[0]);
+}
+
+Tensor SigmoidOp::forward(const std::vector<Tensor>& in) const {
+    return vf::sigmoid(in[0]);
+}
+
+Tensor TanhOp::forward(const std::vector<Tensor>& in) const {
+    return vf::tanh(in[0]);
+}
+
+Tensor SoftmaxOp::forward(const std::vector<Tensor>& in) const {
+    return vf::softmax(in[0]);
 }
 
 Tensor MatMulOp::forward(const std::vector<Tensor>& in) const {
@@ -36,40 +51,26 @@ Tensor OnesLikeOp::forward(const std::vector<Tensor>& in) const {
     const auto& src = in[0];
     const int64_t n = src.numel();
     std::vector<float> ones_data(static_cast<size_t>(n), 1.0f);
-    // Tensor(shape, data, device) uploads to GPU if device == CUDA.
     return Tensor(src.shape(), std::move(ones_data), src.device());
 }
-
-// ── T11: InitVariablesOp forward ─────────────────────────────────────────────
-//
-// Iterates the variable NodeRefs captured at construction time and calls
-// initialize() on each VariableOp.  Returns a dummy scalar so Session.run()
-// has a valid Tensor to hand back to the caller.
 
 Tensor InitVariablesOp::forward(const std::vector<Tensor>&) const {
     for (const auto& var_node : variables_) {
         auto* var_op = dynamic_cast<VariableOp*>(var_node->op().get());
         if (var_op) var_op->initialize();
     }
-    return Tensor({1}, {0.0f});   // dummy; callers typically ignore this
+    return Tensor({1}, {0.0f});
 }
 
-// ── Backward pass (gradient graph construction) ───────────────────────────────
-//
-// Each gradient() call wires new nodes into the default graph.
-// Session.run() then evaluates them together with the forward nodes.
+// ── Backward pass ─────────────────────────────────────────────────────────────
 
-// add: out = a + b
-//   dL/da = dL/dout * 1  = grad_in
-//   dL/db = dL/dout * 1  = grad_in
+// add: dL/da = dL/dout,  dL/db = dL/dout
 std::vector<NodeRef> AddOp::gradient(const NodeRef& /*node*/,
                                       const NodeRef& grad_in) const {
     return {grad_in, grad_in};
 }
 
-// mul: out = a * b
-//   dL/da = dL/dout * b
-//   dL/db = dL/dout * a
+// mul: dL/da = dL/dout * b,  dL/db = dL/dout * a
 std::vector<NodeRef> MulOp::gradient(const NodeRef& node,
                                       const NodeRef& grad_in) const {
     const NodeRef& a = node->inputs()[0];
@@ -80,17 +81,42 @@ std::vector<NodeRef> MulOp::gradient(const NodeRef& node,
     };
 }
 
-// relu: out = max(0, a)
-//   dL/da = dL/dout * step(a)   (step = Heaviside, 1 if x>0 else 0)
+// relu: dL/dx = dL/dout * step(x)
 std::vector<NodeRef> ReluOp::gradient(const NodeRef& node,
                                        const NodeRef& grad_in) const {
     const NodeRef& a = node->inputs()[0];
     return {default_graph().make_mul(grad_in, default_graph().make_step(a))};
 }
 
-// matmul: out = A @ B,  A=[M,K]  B=[K,N]  out=[M,N]
-//   dL/dA = dL/dout @ B^T   →  [M,N] @ [N,K] = [M,K]
-//   dL/dB = A^T @ dL/dout   →  [K,M] @ [M,N] = [K,N]
+// sigmoid: dL/dx = dL/dout * sigma(x) * (1 - sigma(x))
+//   `node` IS the sigmoid node whose evaluated output == sigma(x).
+//   ones = oneslike(node),  one_minus_s = sub(ones, node)
+//   deriv = mul(node, one_minus_s)  → sigma(x) * (1 - sigma(x))
+std::vector<NodeRef> SigmoidOp::gradient(const NodeRef& node,
+                                          const NodeRef& grad_in) const {
+    auto& g = default_graph();
+    auto ones      = g.make_oneslike(node);
+    auto one_minus = g.make_sub(ones, node);         // 1 - sigma(x)
+    auto deriv     = g.make_mul(node, one_minus);    // sigma(x) * (1 - sigma(x))
+    return { g.make_mul(grad_in, deriv) };
+}
+
+// tanh: dL/dx = dL/dout * (1 - tanh(x)^2)
+//   t_sq = mul(node, node)  → tanh(x)^2
+//   ones = oneslike(node)
+//   deriv = sub(ones, t_sq) → 1 - tanh(x)^2
+std::vector<NodeRef> TanhOp::gradient(const NodeRef& node,
+                                       const NodeRef& grad_in) const {
+    auto& g = default_graph();
+    auto t_sq  = g.make_mul(node, node);             // tanh(x)^2
+    auto ones  = g.make_oneslike(node);
+    auto deriv = g.make_sub(ones, t_sq);             // 1 - tanh(x)^2
+    return { g.make_mul(grad_in, deriv) };
+}
+
+// matmul: A=[M,K], B=[K,N]
+//   dL/dA = dL/dout @ B^T
+//   dL/dB = A^T @ dL/dout
 std::vector<NodeRef> MatMulOp::gradient(const NodeRef& node,
                                          const NodeRef& grad_in) const {
     const NodeRef& a = node->inputs()[0];
@@ -155,8 +181,24 @@ NodeRef Graph::make_mul(NodeRef a, NodeRef b, std::string name) {
     return register_node(std::make_shared<MulOp>(), {a, b}, "Mul", name);
 }
 
+NodeRef Graph::make_sub(NodeRef a, NodeRef b, std::string name) {
+    return register_node(std::make_shared<SubOp>(), {a, b}, "Sub", name);
+}
+
 NodeRef Graph::make_relu(NodeRef a, std::string name) {
     return register_node(std::make_shared<ReluOp>(), {a}, "Relu", name);
+}
+
+NodeRef Graph::make_sigmoid(NodeRef a, std::string name) {
+    return register_node(std::make_shared<SigmoidOp>(), {a}, "Sigmoid", name);
+}
+
+NodeRef Graph::make_tanh(NodeRef a, std::string name) {
+    return register_node(std::make_shared<TanhOp>(), {a}, "Tanh", name);
+}
+
+NodeRef Graph::make_softmax(NodeRef a, std::string name) {
+    return register_node(std::make_shared<SoftmaxOp>(), {a}, "Softmax", name);
 }
 
 NodeRef Graph::make_matmul(NodeRef a, NodeRef b, std::string name) {
@@ -175,8 +217,6 @@ NodeRef Graph::make_oneslike(NodeRef a, std::string name) {
     return register_node(std::make_shared<OnesLikeOp>(), {a}, "OnesLike", name);
 }
 
-// ── T11: new graph factory methods ───────────────────────────────────────────
-
 NodeRef Graph::make_placeholder(std::vector<int64_t> shape, std::string name) {
     return register_node(
         std::make_shared<PlaceholderOp>(std::move(shape)), {}, "Placeholder", name);
@@ -190,8 +230,6 @@ NodeRef Graph::make_variable(Tensor initial_value, std::string name) {
 }
 
 NodeRef Graph::make_init_variables(std::string name) {
-    // Snapshot the variable list at the time of this call.
-    // Variables created afterwards are not included — consistent with TF1.
     return register_node(
         std::make_shared<InitVariablesOp>(variables_),
         {},
@@ -199,19 +237,15 @@ NodeRef Graph::make_init_variables(std::string name) {
         name.empty() ? "init_variables" : name);
 }
 
-// ── Graph lifecycle ───────────────────────────────────────────────────────────
-
 void Graph::reset_values() {
     for (auto& n : nodes_) n->reset();
 }
 
 void Graph::clear() {
     nodes_.clear();
-    variables_.clear();   // must be cleared alongside nodes_
+    variables_.clear();
     next_id_ = 0;
 }
-
-// ── Default graph ─────────────────────────────────────────────────────────────
 
 Graph& default_graph() {
     static Graph g;
