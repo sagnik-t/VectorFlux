@@ -44,6 +44,5 @@ pybind11_add_module(_core
 target_link_libraries(_core PRIVATE CUDA::cudart CUDA::cublas)
 
 set_target_properties(_core PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/python/vectorflux
 )
