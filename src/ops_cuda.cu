@@ -347,12 +347,8 @@ Tensor reduce_sum(const Tensor& a) {
 // reduce_sum then scale in-place with a fill_kernel on a [1] tensor.
 Tensor reduce_mean(const Tensor& a) {
     const int64_t n   = a.numel();
-    Tensor        out = cuda::reduce_sum(a);      // [1] CUDA tensor with sum
+    Tensor        out = cuda::reduce_sum(a);
     const float   inv = 1.0f / static_cast<float>(n);
-    // Multiply the single element by 1/N
-    fill_kernel<<<1, 1>>>(out.cuda_data(), 0.0f, 1);  // dummy to reuse fill
-    // Actually: we need scale, not fill. Use a multiply-in-place approach:
-    // read scalar, multiply, write back — simplest with a tiny host round-trip.
     float s;
     cuda_check(cudaMemcpy(&s, out.cuda_data(), sizeof(float),
                            cudaMemcpyDeviceToHost), "reduce_mean copy D2H");
