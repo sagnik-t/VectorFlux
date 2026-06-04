@@ -14,33 +14,21 @@ import numpy as np
 import pytest
 import vectorflux as vf
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
-def t(arr):
-    return vf.Tensor(arr.astype(np.float32))
-
-
-@pytest.fixture(autouse=True)
-def clean_graph():
-    vf.reset_default_graph()
-    yield
-    vf.reset_default_graph()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Basic evaluation
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestBasicRun:
-    def test_const_node(self):
+    def test_const_node(self, t):
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         node = vf.make_const(t(na))
         sess = vf.Session()
         result = sess.run(node)
         np.testing.assert_array_equal(result.to_numpy(), na)
 
-    def test_add_two_consts(self):
+    def test_add_two_consts(self, t):
         a = vf.make_const(t(np.array([1.0, 2.0])))
         b = vf.make_const(t(np.array([3.0, 4.0])))
         c = vf.make_add(a, b)
@@ -48,7 +36,7 @@ class TestBasicRun:
         result = sess.run(c)
         np.testing.assert_array_equal(result.to_numpy(), [4.0, 6.0])
 
-    def test_mul_two_consts(self):
+    def test_mul_two_consts(self, t):
         a = vf.make_const(t(np.array([2.0, 3.0])))
         b = vf.make_const(t(np.array([4.0, 5.0])))
         c = vf.make_mul(a, b)
@@ -56,14 +44,14 @@ class TestBasicRun:
         result = sess.run(c)
         np.testing.assert_array_equal(result.to_numpy(), [8.0, 15.0])
 
-    def test_relu_node(self):
+    def test_relu_node(self, t):
         a = vf.make_const(t(np.array([-1.0, 0.0, 2.0])))
         b = vf.make_relu(a)
         sess = vf.Session()
         result = sess.run(b)
         np.testing.assert_array_equal(result.to_numpy(), [0.0, 0.0, 2.0])
 
-    def test_matmul_node(self):
+    def test_matmul_node(self, t):
         na = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
         nb = np.eye(2, dtype=np.float32)
         a = vf.make_const(t(na))
@@ -73,7 +61,7 @@ class TestBasicRun:
         result = sess.run(c)
         np.testing.assert_allclose(result.to_numpy(), na @ nb, atol=1e-6)
 
-    def test_chained_ops(self):
+    def test_chained_ops(self, t):
         """matmul → relu → add chain."""
         na = np.array([[1.0, -1.0], [-2.0, 3.0]], dtype=np.float32)
         nb = np.eye(2, dtype=np.float32)
@@ -89,7 +77,7 @@ class TestBasicRun:
         expected = np.maximum(0, na @ nb) + nc
         np.testing.assert_allclose(result.to_numpy(), expected, atol=1e-6)
 
-    def test_2d_shapes_preserved(self):
+    def test_2d_shapes_preserved(self, t):
         na = np.arange(6, dtype=np.float32).reshape(2, 3)
         nb = np.zeros((2, 3), dtype=np.float32)
         a = vf.make_const(t(na))
@@ -98,13 +86,12 @@ class TestBasicRun:
         sess = vf.Session()
         assert sess.run(c).shape == (2, 3)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Multiple fetches
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestMultipleFetches:
-    def test_two_independent_nodes(self):
+    def test_two_independent_nodes(self, t):
         a = vf.make_const(t(np.array([1.0, 2.0])))
         b = vf.make_const(t(np.array([3.0, 4.0])))
         sess = vf.Session()
@@ -113,7 +100,7 @@ class TestMultipleFetches:
         np.testing.assert_array_equal(results[0].to_numpy(), [1.0, 2.0])
         np.testing.assert_array_equal(results[1].to_numpy(), [3.0, 4.0])
 
-    def test_fetch_input_and_output(self):
+    def test_fetch_input_and_output(self, t):
         a = vf.make_const(t(np.array([1.0, 2.0])))
         b = vf.make_const(t(np.array([3.0, 4.0])))
         c = vf.make_add(a, b)
@@ -122,7 +109,7 @@ class TestMultipleFetches:
         np.testing.assert_array_equal(results[0].to_numpy(), [1.0, 2.0])
         np.testing.assert_array_equal(results[1].to_numpy(), [4.0, 6.0])
 
-    def test_fetch_order_preserved(self):
+    def test_fetch_order_preserved(self, t):
         a = vf.make_const(t(np.array([1.0])))
         b = vf.make_const(t(np.array([2.0])))
         c = vf.make_const(t(np.array([3.0])))
@@ -132,7 +119,7 @@ class TestMultipleFetches:
         assert results[1].to_numpy()[0] == pytest.approx(1.0)
         assert results[2].to_numpy()[0] == pytest.approx(2.0)
 
-    def test_same_node_fetched_twice(self):
+    def test_same_node_fetched_twice(self, t):
         a = vf.make_const(t(np.array([5.0])))
         sess = vf.Session()
         results = sess.run([a, a])
@@ -140,13 +127,12 @@ class TestMultipleFetches:
         assert results[0].to_numpy()[0] == pytest.approx(5.0)
         assert results[1].to_numpy()[0] == pytest.approx(5.0)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # feed_dict
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestFeedDict:
-    def test_override_single_const(self):
+    def test_override_single_const(self, t):
         a = vf.make_const(t(np.array([1.0, 2.0])))
         b = vf.make_const(t(np.array([3.0, 4.0])))
         c = vf.make_add(a, b)
@@ -154,7 +140,7 @@ class TestFeedDict:
         result = sess.run(c, feed_dict={a: t(np.array([10.0, 20.0]))})
         np.testing.assert_array_equal(result.to_numpy(), [13.0, 24.0])
 
-    def test_override_both_inputs(self):
+    def test_override_both_inputs(self, t):
         a = vf.make_const(t(np.zeros(2)))
         b = vf.make_const(t(np.zeros(2)))
         c = vf.make_add(a, b)
@@ -165,13 +151,13 @@ class TestFeedDict:
         })
         np.testing.assert_array_equal(result.to_numpy(), [4.0, 6.0])
 
-    def test_empty_feed_dict(self):
+    def test_empty_feed_dict(self, t):
         a = vf.make_const(t(np.array([5.0])))
         sess = vf.Session()
         result = sess.run(a, feed_dict={})
         assert result.to_numpy()[0] == pytest.approx(5.0)
 
-    def test_feed_does_not_mutate_node(self):
+    def test_feed_does_not_mutate_node(self, t):
         """Running with feed_dict must not permanently change the const value."""
         a = vf.make_const(t(np.array([1.0, 2.0])))
         b = vf.make_const(t(np.array([3.0, 4.0])))
@@ -182,7 +168,7 @@ class TestFeedDict:
         result = sess.run(c)
         np.testing.assert_array_equal(result.to_numpy(), [4.0, 6.0])
 
-    def test_feed_different_values_across_runs(self):
+    def test_feed_different_values_across_runs(self, t):
         a = vf.make_const(t(np.zeros(2)))
         b = vf.make_const(t(np.array([1.0, 1.0])))
         c = vf.make_add(a, b)
@@ -192,13 +178,12 @@ class TestFeedDict:
         np.testing.assert_array_equal(r1.to_numpy(), [2.0, 3.0])
         np.testing.assert_array_equal(r2.to_numpy(), [11.0, 21.0])
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Topological correctness
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestTopologicalCorrectness:
-    def test_diamond_dag(self):
+    def test_diamond_dag(self, t):
         """Shared input → two relu branches → add.  Topo sort must not duplicate work."""
         a = vf.make_const(t(np.array([2.0, -3.0])))
         b = vf.make_relu(a)     # [2, 0]
@@ -208,7 +193,7 @@ class TestTopologicalCorrectness:
         result = sess.run(d)
         np.testing.assert_array_equal(result.to_numpy(), [4.0, 0.0])
 
-    def test_shared_intermediate(self):
+    def test_shared_intermediate(self, t):
         """s = a + b; p = a * b; out = s + p"""
         na = np.array([1.0, 2.0], dtype=np.float32)
         nb = np.array([3.0, 4.0], dtype=np.float32)
@@ -221,7 +206,7 @@ class TestTopologicalCorrectness:
         result = sess.run(out)
         np.testing.assert_array_equal(result.to_numpy(), (na + nb) + (na * nb))
 
-    def test_deep_chain(self):
+    def test_deep_chain(self, t):
         """10 stacked relu nodes should all evaluate correctly."""
         node = vf.make_const(t(np.array([1.0, -2.0, 3.0])))
         for _ in range(10):
@@ -230,7 +215,7 @@ class TestTopologicalCorrectness:
         result = sess.run(node)
         np.testing.assert_array_equal(result.to_numpy(), [1.0, 0.0, 3.0])
 
-    def test_evaluated_flag_set_after_run(self):
+    def test_evaluated_flag_set_after_run(self, t):
         a = vf.make_const(t(np.array([1.0])))
         b = vf.make_relu(a)
         sess = vf.Session()
@@ -240,7 +225,7 @@ class TestTopologicalCorrectness:
         assert a.evaluated
         assert b.evaluated
 
-    def test_unreachable_node_not_evaluated(self):
+    def test_unreachable_node_not_evaluated(self, t):
         """A node not in the fetch's dependency graph must stay unevaluated."""
         a = vf.make_const(t(np.array([1.0])))
         b = vf.make_const(t(np.array([2.0])))
@@ -252,13 +237,12 @@ class TestTopologicalCorrectness:
         # c, a, b were evaluated; d was not fetched and must remain unevaluated
         assert not d.evaluated
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Repeatability
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestRepeatability:
-    def test_same_result_on_repeated_runs(self):
+    def test_same_result_on_repeated_runs(self, t):
         a = vf.make_const(t(np.array([1.0, 2.0, 3.0])))
         b = vf.make_relu(a)
         sess = vf.Session()
@@ -266,7 +250,7 @@ class TestRepeatability:
         r2 = sess.run(b).to_numpy().copy()
         np.testing.assert_array_equal(r1, r2)
 
-    def test_multiple_sessions_same_graph(self):
+    def test_multiple_sessions_same_graph(self, t):
         a = vf.make_const(t(np.array([1.0, 2.0])))
         b = vf.make_const(t(np.array([3.0, 4.0])))
         c = vf.make_add(a, b)
@@ -276,7 +260,7 @@ class TestRepeatability:
         r2 = s2.run(c).to_numpy()
         np.testing.assert_array_equal(r1, r2)
 
-    def test_interleaved_runs(self):
+    def test_interleaved_runs(self, t):
         """Run session A, then session B on same graph, then A again — stable."""
         a = vf.make_const(t(np.array([5.0])))
         b = vf.make_relu(a)

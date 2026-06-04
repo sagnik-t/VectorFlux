@@ -14,12 +14,7 @@ import numpy as np
 import pytest
 import vectorflux as vf
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
-def t(arr):
-    return vf.Tensor(arr.astype(np.float32))
-
 
 def one_hot(indices, C):
     N  = len(indices)
@@ -28,20 +23,12 @@ def one_hot(indices, C):
         oh[idx, j] = 1.0
     return oh
 
-
-@pytest.fixture(autouse=True)
-def clean_graph():
-    vf.reset_default_graph()
-    yield
-    vf.reset_default_graph()
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # GradientDescentOptimizer
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestGradientDescentOptimizer:
-    def test_minimize_returns_train_op(self):
+    def test_minimize_returns_train_op(self, t):
         W    = vf.Variable(t(np.ones((2, 2), dtype=np.float32)))
         ph   = vf.placeholder([2, 2])
         loss = vf.losses.mse(W, ph)
@@ -49,7 +36,7 @@ class TestGradientDescentOptimizer:
         op   = opt.minimize(loss)
         assert isinstance(op, vf.TrainOp)
 
-    def test_sgd_step_updates_weights(self):
+    def test_sgd_step_updates_weights(self, t):
         """One SGD step: w_new = w_old - lr * grad.  Exact value check."""
         # Simple loss: reduce_mean(W) — grad is 1/N everywhere.
         lr   = 0.1
@@ -63,7 +50,7 @@ class TestGradientDescentOptimizer:
         expected = na - lr * np.full(4, 1.0 / 4)
         np.testing.assert_allclose(W.numpy, expected, atol=1e-6)
 
-    def test_sgd_loss_decreases(self):
+    def test_sgd_loss_decreases(self, t):
         """A single gradient step should reduce MSE loss on a random problem."""
         np.random.seed(0)
         C, N = 4, 8
@@ -81,7 +68,7 @@ class TestGradientDescentOptimizer:
         l1   = sess.run(loss, feed_dict=fd).to_numpy()[0]
         assert l1 < l0, f"Expected loss to decrease, got {l0:.6f} → {l1:.6f}"
 
-    def test_explicit_var_list(self):
+    def test_explicit_var_list(self, t):
         """var_list= controls which variables get updated."""
         W1 = vf.Variable(t(np.ones(3, dtype=np.float32)), name="W1")
         W2 = vf.Variable(t(np.ones(3, dtype=np.float32)), name="W2")
@@ -96,7 +83,7 @@ class TestGradientDescentOptimizer:
         # W1 must have changed
         assert not np.allclose(W1.numpy, np.ones(3))
 
-    def test_sgd_linear_regression(self):
+    def test_sgd_linear_regression(self, t):
         """Fit y = 2*x with a single weight matrix using SGD."""
         np.random.seed(1)
         N   = 16
@@ -119,20 +106,19 @@ class TestGradientDescentOptimizer:
         # Weight should converge to ~2.0
         np.testing.assert_allclose(W.numpy.flat[0], 2.0, atol=0.1)
 
-    def test_no_variables_raises(self):
+    def test_no_variables_raises(self, t):
         """minimize() with empty var_list raises RuntimeError."""
         loss = vf.make_const(t(np.array([1.0], dtype=np.float32)))
         opt  = vf.train.GradientDescentOptimizer(0.01)
         with pytest.raises(RuntimeError):
             opt.minimize(loss, var_list=[])
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # AdamOptimizer
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAdamOptimizer:
-    def test_minimize_returns_train_op(self):
+    def test_minimize_returns_train_op(self, t):
         W    = vf.Variable(t(np.ones((2, 2), dtype=np.float32)))
         ph   = vf.placeholder([2, 2])
         loss = vf.losses.mse(W, ph)
@@ -140,7 +126,7 @@ class TestAdamOptimizer:
         op   = opt.minimize(loss)
         assert isinstance(op, vf.TrainOp)
 
-    def test_adam_step_updates_weights(self):
+    def test_adam_step_updates_weights(self, t):
         """First Adam step: verify exact weight change using closed-form formula."""
         lr, beta1, beta2, eps = 0.1, 0.9, 0.999, 1e-8
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
@@ -161,7 +147,7 @@ class TestAdamOptimizer:
 
         np.testing.assert_allclose(W.numpy, expected, rtol=1e-5)
 
-    def test_adam_moment_vectors_initialized(self):
+    def test_adam_moment_vectors_initialized(self, t):
         """After one step, moment vectors must be set for the variable."""
         W    = vf.Variable(t(np.ones(4, dtype=np.float32)))
         loss = vf.reduce_mean(W)
@@ -175,7 +161,7 @@ class TestAdamOptimizer:
         assert opt._m[vid].shape == (4,)
         assert opt._v[vid].shape == (4,)
 
-    def test_adam_loss_decreases(self):
+    def test_adam_loss_decreases(self, t):
         """A single Adam step should reduce MSE loss."""
         np.random.seed(3)
         C, N   = 3, 6
@@ -193,7 +179,7 @@ class TestAdamOptimizer:
         l1   = sess.run(loss, feed_dict=fd).to_numpy()[0]
         assert l1 < l0, f"Expected loss to decrease, got {l0:.6f} → {l1:.6f}"
 
-    def test_adam_convergence(self):
+    def test_adam_convergence(self, t):
         """Adam should converge on a small linear regression problem."""
         np.random.seed(5)
         N    = 8
@@ -215,19 +201,18 @@ class TestAdamOptimizer:
 
         np.testing.assert_allclose(W.numpy.flat[0], 3.0, atol=0.15)
 
-    def test_no_variables_raises(self):
+    def test_no_variables_raises(self, t):
         loss = vf.make_const(t(np.array([1.0], dtype=np.float32)))
         opt  = vf.train.AdamOptimizer()
         with pytest.raises(RuntimeError):
             opt.minimize(loss, var_list=[])
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TrainOp
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestTrainOp:
-    def test_returns_loss_tensor(self):
+    def test_returns_loss_tensor(self, t):
         """sess.run(train_op) returns a Tensor (the loss value)."""
         W    = vf.Variable(t(np.ones((2, 2), dtype=np.float32)))
         ph   = vf.placeholder([2, 2])
@@ -239,7 +224,7 @@ class TestTrainOp:
         result = sess.run(op, feed_dict=fd)
         assert isinstance(result, vf.Tensor)
 
-    def test_loss_tensor_value(self):
+    def test_loss_tensor_value(self, t):
         """The returned Tensor holds the correct pre-update loss value."""
         na    = np.ones((2,), dtype=np.float32)
         zeros = np.zeros((2,), dtype=np.float32)
@@ -253,7 +238,7 @@ class TestTrainOp:
         loss_val = sess.run(op, feed_dict=fd).to_numpy()[0]
         np.testing.assert_allclose(loss_val, 1.0, atol=1e-6)  # mse([1,1],[0,0])=1
 
-    def test_step_counter_increments(self):
+    def test_step_counter_increments(self, t):
         """TrainOp._step increments by 1 on each sess.run()."""
         W    = vf.Variable(t(np.ones(3, dtype=np.float32)))
         loss = vf.reduce_mean(W)
@@ -266,7 +251,7 @@ class TestTrainOp:
         sess.run(op)
         assert op._step == 3
 
-    def test_feed_dict_threading(self):
+    def test_feed_dict_threading(self, t):
         """feed_dict values reach the graph correctly inside TrainOp._execute."""
         np.random.seed(9)
         W    = vf.Variable(t(np.ones((2, 3), dtype=np.float32)))
@@ -283,7 +268,7 @@ class TestTrainOp:
         # Reset W for a fair comparison
         vf.reset_default_graph()
 
-    def test_auto_discovers_variables(self):
+    def test_auto_discovers_variables(self, t):
         """minimize(loss) with no var_list auto-discovers registered Variables."""
         W1 = vf.Variable(t(np.ones(3, dtype=np.float32)), name="W1")
         W2 = vf.Variable(t(np.ones(3, dtype=np.float32)), name="W2")
@@ -293,7 +278,7 @@ class TestTrainOp:
         op   = opt.minimize(loss)  # no var_list
         assert len(op._vars) == 2
 
-    def test_sgd_2class_logistic_regression(self):
+    def test_sgd_2class_logistic_regression(self, t):
         """
         End-to-end: 2-class logistic regression converges.
         Data: x in R^2, class 0 if x[0]>0 else class 1.
@@ -330,7 +315,7 @@ class TestTrainOp:
         accuracy = (preds == true_labels).mean()
         assert accuracy > 0.9, f"Expected accuracy > 90%, got {accuracy:.1%}"
 
-    def test_adam_2class_logistic_regression(self):
+    def test_adam_2class_logistic_regression(self, t):
         """Same as above but with Adam; should converge faster."""
         np.random.seed(42)
         C, N_train = 2, 64

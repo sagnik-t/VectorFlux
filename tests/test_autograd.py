@@ -13,21 +13,9 @@ import numpy as np
 import pytest
 import vectorflux as vf
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def t(arr):
-    return vf.Tensor(arr.astype(np.float32))
-
-
-@pytest.fixture(autouse=True)
-def clean_graph():
-    vf.reset_default_graph()
-    yield
-    vf.reset_default_graph()
-
-
-def numerical_gradient(sess, out_node, in_node, x_np, eps=1e-3):
+def numerical_gradient(sess, out_node, in_node, x_np, t, eps=1e-3):
     """
     Finite-difference estimate of  d(sum(out)) / d(in),
     matching what vf.gradients() computes (sum-of-output convention).
@@ -48,7 +36,6 @@ def numerical_gradient(sess, out_node, in_node, x_np, eps=1e-3):
         grad.ravel()[i] = (f_plus - f_minus) / (2.0 * eps)
     return grad
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Primitive op correctness: step, transpose, oneslike
 # ══════════════════════════════════════════════════════════════════════════════
@@ -56,26 +43,26 @@ def numerical_gradient(sess, out_node, in_node, x_np, eps=1e-3):
 class TestPrimitiveOps:
     # ── step ──────────────────────────────────────────────────────────────────
 
-    def test_step_positive(self):
+    def test_step_positive(self, t):
         a = vf.make_const(t(np.array([1.0, 2.0, 3.0])))
         s = vf.make_step(a)
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(s).to_numpy(), [1, 1, 1])
 
-    def test_step_negative(self):
+    def test_step_negative(self, t):
         a = vf.make_const(t(np.array([-1.0, -2.0, -3.0])))
         s = vf.make_step(a)
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(s).to_numpy(), [0, 0, 0])
 
-    def test_step_mixed(self):
+    def test_step_mixed(self, t):
         # step(0) = 0  by subgradient convention
         a = vf.make_const(t(np.array([-1.0, 0.0, 1.0])))
         s = vf.make_step(a)
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(s).to_numpy(), [0, 0, 1])
 
-    def test_step_2d(self):
+    def test_step_2d(self, t):
         na = np.array([[-3.0, 2.0], [0.0, 5.0]], dtype=np.float32)
         a = vf.make_const(t(na))
         s = vf.make_step(a)
@@ -85,7 +72,7 @@ class TestPrimitiveOps:
 
     # ── transpose ─────────────────────────────────────────────────────────────
 
-    def test_transpose_basic(self):
+    def test_transpose_basic(self, t):
         na = np.array([[1.0, 2.0, 3.0],
                        [4.0, 5.0, 6.0]], dtype=np.float32)   # [2, 3]
         a = vf.make_const(t(na))
@@ -95,14 +82,14 @@ class TestPrimitiveOps:
         assert out.shape == (3, 2)
         np.testing.assert_array_equal(out.to_numpy(), na.T)
 
-    def test_transpose_square(self):
+    def test_transpose_square(self, t):
         na = np.arange(1, 10, dtype=np.float32).reshape(3, 3)
         a = vf.make_const(t(na))
         r = vf.make_transpose(a)
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(r).to_numpy(), na.T)
 
-    def test_transpose_double_is_identity(self):
+    def test_transpose_double_is_identity(self, t):
         na = np.arange(6, dtype=np.float32).reshape(2, 3)
         a = vf.make_const(t(na))
         r = vf.make_transpose(vf.make_transpose(a))
@@ -111,7 +98,7 @@ class TestPrimitiveOps:
 
     # ── oneslike ──────────────────────────────────────────────────────────────
 
-    def test_oneslike_shape_1d(self):
+    def test_oneslike_shape_1d(self, t):
         a = vf.make_const(t(np.zeros(4)))
         o = vf.make_oneslike(a)
         sess = vf.Session()
@@ -119,7 +106,7 @@ class TestPrimitiveOps:
         assert out.shape == (4,)
         np.testing.assert_array_equal(out.to_numpy(), np.ones(4))
 
-    def test_oneslike_shape_2d(self):
+    def test_oneslike_shape_2d(self, t):
         a = vf.make_const(t(np.zeros((2, 3))))
         o = vf.make_oneslike(a)
         sess = vf.Session()
@@ -127,13 +114,12 @@ class TestPrimitiveOps:
         assert out.shape == (2, 3)
         np.testing.assert_array_equal(out.to_numpy(), np.ones((2, 3)))
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Analytical gradients
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestAnalyticalGradients:
-    def test_grad_add_both_inputs(self):
+    def test_grad_add_both_inputs(self, t):
         """d(a+b)/da = ones, d(a+b)/db = ones."""
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         nb = np.array([4.0, 5.0, 6.0], dtype=np.float32)
@@ -145,7 +131,7 @@ class TestAnalyticalGradients:
         np.testing.assert_array_equal(sess.run(da).to_numpy(), np.ones(3))
         np.testing.assert_array_equal(sess.run(db).to_numpy(), np.ones(3))
 
-    def test_grad_mul_a(self):
+    def test_grad_mul_a(self, t):
         """d(a*b)/da = b."""
         na = np.array([2.0, 3.0], dtype=np.float32)
         nb = np.array([4.0, 5.0], dtype=np.float32)
@@ -156,7 +142,7 @@ class TestAnalyticalGradients:
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(da).to_numpy(), nb)
 
-    def test_grad_mul_b(self):
+    def test_grad_mul_b(self, t):
         """d(a*b)/db = a."""
         na = np.array([2.0, 3.0], dtype=np.float32)
         nb = np.array([4.0, 5.0], dtype=np.float32)
@@ -167,7 +153,7 @@ class TestAnalyticalGradients:
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(db).to_numpy(), na)
 
-    def test_grad_relu_positive(self):
+    def test_grad_relu_positive(self, t):
         """relu gradient is 1 where input > 0."""
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         a = vf.make_const(t(na))
@@ -176,7 +162,7 @@ class TestAnalyticalGradients:
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(da).to_numpy(), np.ones(3))
 
-    def test_grad_relu_negative(self):
+    def test_grad_relu_negative(self, t):
         """relu gradient is 0 where input < 0."""
         na = np.array([-1.0, -2.0, -3.0], dtype=np.float32)
         a = vf.make_const(t(na))
@@ -185,7 +171,7 @@ class TestAnalyticalGradients:
         sess = vf.Session()
         np.testing.assert_array_equal(sess.run(da).to_numpy(), np.zeros(3))
 
-    def test_grad_relu_mixed(self):
+    def test_grad_relu_mixed(self, t):
         """relu gradient matches step(a) element-wise."""
         na = np.array([-2.0, -1.0, 1.0, 2.0], dtype=np.float32)
         a = vf.make_const(t(na))
@@ -195,7 +181,7 @@ class TestAnalyticalGradients:
         expected = (na > 0).astype(np.float32)
         np.testing.assert_array_equal(sess.run(da).to_numpy(), expected)
 
-    def test_grad_matmul_a_shape(self):
+    def test_grad_matmul_a_shape(self, t):
         """dL/dA has same shape as A."""
         na = np.ones((2, 3), dtype=np.float32)
         nb = np.ones((3, 4), dtype=np.float32)
@@ -206,7 +192,7 @@ class TestAnalyticalGradients:
         sess = vf.Session()
         assert sess.run(da).shape == (2, 3)
 
-    def test_grad_matmul_b_shape(self):
+    def test_grad_matmul_b_shape(self, t):
         """dL/dB has same shape as B."""
         na = np.ones((2, 3), dtype=np.float32)
         nb = np.ones((3, 4), dtype=np.float32)
@@ -217,7 +203,7 @@ class TestAnalyticalGradients:
         sess = vf.Session()
         assert sess.run(db).shape == (3, 4)
 
-    def test_grad_matmul_a_value(self):
+    def test_grad_matmul_a_value(self, t):
         """dL/dA = ones @ B^T when seeded with ones_like."""
         na = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)   # [2, 2]
         nb = np.eye(2, dtype=np.float32)
@@ -230,7 +216,6 @@ class TestAnalyticalGradients:
         np.testing.assert_allclose(sess.run(da).to_numpy(),
                                    np.ones((2, 2)) @ nb.T, atol=1e-5)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Numerical gradient checks
 # ══════════════════════════════════════════════════════════════════════════════
@@ -241,7 +226,7 @@ class TestNumericalGradients:
     Test values deliberately avoid x = 0 so relu is differentiable.
     """
 
-    def test_numerical_add_a(self):
+    def test_numerical_add_a(self, t):
         rng = np.random.default_rng(0)
         na = rng.uniform(1, 3, (3, 4)).astype(np.float32)
         nb = rng.uniform(1, 3, (3, 4)).astype(np.float32)
@@ -253,10 +238,10 @@ class TestNumericalGradients:
         # float32 finite differences accumulate ~3e-3 round-off over 12 elements
         np.testing.assert_allclose(
             sess.run(da).to_numpy(),
-            numerical_gradient(sess, out, a, na),
+            numerical_gradient(sess, out, a, na, t),
             atol=5e-3)
 
-    def test_numerical_mul_a(self):
+    def test_numerical_mul_a(self, t):
         rng = np.random.default_rng(1)
         na = rng.uniform(1, 3, (3,)).astype(np.float32)
         nb = rng.uniform(1, 3, (3,)).astype(np.float32)
@@ -267,10 +252,10 @@ class TestNumericalGradients:
         sess = vf.Session()
         np.testing.assert_allclose(
             sess.run(da).to_numpy(),
-            numerical_gradient(sess, out, a, na),
+            numerical_gradient(sess, out, a, na, t),
             atol=2e-3)
 
-    def test_numerical_mul_b(self):
+    def test_numerical_mul_b(self, t):
         rng = np.random.default_rng(2)
         na = rng.uniform(1, 3, (4,)).astype(np.float32)
         nb = rng.uniform(1, 3, (4,)).astype(np.float32)
@@ -281,10 +266,10 @@ class TestNumericalGradients:
         sess = vf.Session()
         np.testing.assert_allclose(
             sess.run(db).to_numpy(),
-            numerical_gradient(sess, out, b, nb),
+            numerical_gradient(sess, out, b, nb, t),
             atol=2e-3)
 
-    def test_numerical_relu(self):
+    def test_numerical_relu(self, t):
         # All positive values to keep gradient = 1 everywhere
         rng = np.random.default_rng(3)
         na = rng.uniform(0.5, 3, (5,)).astype(np.float32)
@@ -294,10 +279,10 @@ class TestNumericalGradients:
         sess = vf.Session()
         np.testing.assert_allclose(
             sess.run(da).to_numpy(),
-            numerical_gradient(sess, out, a, na),
+            numerical_gradient(sess, out, a, na, t),
             atol=1e-4)
 
-    def test_numerical_matmul_a(self):
+    def test_numerical_matmul_a(self, t):
         rng = np.random.default_rng(4)
         na = rng.standard_normal((2, 3)).astype(np.float32)
         nb = rng.standard_normal((3, 4)).astype(np.float32)
@@ -308,10 +293,10 @@ class TestNumericalGradients:
         sess = vf.Session()
         np.testing.assert_allclose(
             sess.run(da).to_numpy(),
-            numerical_gradient(sess, out, a, na),
+            numerical_gradient(sess, out, a, na, t),
             atol=1e-3)
 
-    def test_numerical_matmul_b(self):
+    def test_numerical_matmul_b(self, t):
         rng = np.random.default_rng(5)
         na = rng.standard_normal((2, 3)).astype(np.float32)
         nb = rng.standard_normal((3, 4)).astype(np.float32)
@@ -322,10 +307,10 @@ class TestNumericalGradients:
         sess = vf.Session()
         np.testing.assert_allclose(
             sess.run(db).to_numpy(),
-            numerical_gradient(sess, out, b, nb),
+            numerical_gradient(sess, out, b, nb, t),
             atol=1e-3)
 
-    def test_numerical_chain_matmul_relu(self):
+    def test_numerical_chain_matmul_relu(self, t):
         """Gradient flows through matmul → relu → add chain."""
         rng = np.random.default_rng(6)
         nW = rng.standard_normal((3, 4)).astype(np.float32)
@@ -339,16 +324,15 @@ class TestNumericalGradients:
         sess = vf.Session()
         np.testing.assert_allclose(
             sess.run(dW).to_numpy(),
-            numerical_gradient(sess, out, W, nW),
+            numerical_gradient(sess, out, W, nW, t),
             atol=1e-3)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Gradient accumulation
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestGradientAccumulation:
-    def test_diamond_add(self):
+    def test_diamond_add(self, t):
         """a is used twice in b + c → gradient should be 2 * ones."""
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         a = vf.make_const(t(na))
@@ -362,7 +346,7 @@ class TestGradientAccumulation:
             sess.run(da).to_numpy(),
             np.full(3, 2.0, dtype=np.float32))
 
-    def test_diamond_numerical(self):
+    def test_diamond_numerical(self, t):
         """Diamond DAG accumulation matches finite differences."""
         rng = np.random.default_rng(7)
         na = rng.uniform(0.5, 2, (4,)).astype(np.float32)
@@ -374,10 +358,10 @@ class TestGradientAccumulation:
         sess = vf.Session()
         np.testing.assert_allclose(
             sess.run(da).to_numpy(),
-            numerical_gradient(sess, out, a, na),
+            numerical_gradient(sess, out, a, na, t),
             atol=1e-3)
 
-    def test_mul_same_input(self):
+    def test_mul_same_input(self, t):
         """a * a — gradient should be 2*a."""
         na = np.array([2.0, 3.0, 4.0], dtype=np.float32)
         a = vf.make_const(t(na))

@@ -24,10 +24,6 @@ import vectorflux as vf
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
-def t(arr: np.ndarray) -> vf.Tensor:
-    return vf.Tensor(arr.astype(np.float32))
-
-
 def make_one_hot(labels: np.ndarray, num_classes: int = 10) -> np.ndarray:
     """labels: [N] int  →  [num_classes, N] float32 one-hot."""
     n  = len(labels)
@@ -35,20 +31,12 @@ def make_one_hot(labels: np.ndarray, num_classes: int = 10) -> np.ndarray:
     oh[labels, np.arange(n)] = 1.0
     return oh
 
-
-@pytest.fixture(autouse=True)
-def clean_graph():
-    vf.reset_default_graph()
-    yield
-    vf.reset_default_graph()
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Graph construction
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestModelBuild:
-    def test_three_layer_mlp_builds(self):
+    def test_three_layer_mlp_builds(self, t):
         """Dense × 3 wired together must return a Node without error."""
         X = vf.placeholder([784, 1], name="X")
         l1 = vf.Dense(784, 256, activation=vf.nn.relu, name="fc1")
@@ -57,7 +45,7 @@ class TestModelBuild:
         logits = l3(l2(l1(X)))
         assert isinstance(logits, vf.Node)
 
-    def test_loss_node_type(self):
+    def test_loss_node_type(self, t):
         """softmax_cross_entropy must return a graph Node."""
         X = vf.placeholder([784, 1])
         Y = vf.placeholder([10,  1])
@@ -67,7 +55,7 @@ class TestModelBuild:
         loss   = vf.losses.softmax_cross_entropy(logits, Y)
         assert isinstance(loss, vf.Node)
 
-    def test_train_op_builds(self):
+    def test_train_op_builds(self, t):
         """GradientDescentOptimizer.minimize must return a TrainOp."""
         X = vf.placeholder([784, 1])
         Y = vf.placeholder([10,  1])
@@ -78,7 +66,7 @@ class TestModelBuild:
         train_op = vf.train.GradientDescentOptimizer(0.01).minimize(loss)
         assert isinstance(train_op, vf.TrainOp)
 
-    def test_adam_train_op_builds(self):
+    def test_adam_train_op_builds(self, t):
         """AdamOptimizer.minimize must return a TrainOp."""
         X = vf.placeholder([784, 1])
         Y = vf.placeholder([10,  1])
@@ -88,7 +76,6 @@ class TestModelBuild:
         loss     = vf.losses.softmax_cross_entropy(logits, Y)
         train_op = vf.train.AdamOptimizer(0.001).minimize(loss)
         assert isinstance(train_op, vf.TrainOp)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Forward pass
@@ -105,7 +92,7 @@ class TestForwardPass:
         loss   = vf.losses.softmax_cross_entropy(logits, Y)
         return X, Y, logits, loss
 
-    def test_logits_output_shape(self):
+    def test_logits_output_shape(self, t):
         """Logits output shape must be (10, N) for any batch size N."""
         for N in (1, 8, 32):
             vf.reset_default_graph()
@@ -119,7 +106,7 @@ class TestForwardPass:
             assert out.shape == (10, N), \
                 f"Expected (10, {N}), got {out.shape}"
 
-    def test_logits_no_nan_inf(self):
+    def test_logits_no_nan_inf(self, t):
         """Logits must be finite (no NaN / Inf) after Xavier init."""
         N = 16
         X, Y, logits, _ = self._build_small()
@@ -131,7 +118,7 @@ class TestForwardPass:
         out  = sess.run(logits, feed_dict={X: t(X_np)}).to_numpy()
         assert np.all(np.isfinite(out)), "Logits contain NaN or Inf"
 
-    def test_loss_is_scalar(self):
+    def test_loss_is_scalar(self, t):
         """CE loss must have shape (1,)."""
         N = 8
         X, Y, logits, loss = self._build_small()
@@ -144,7 +131,7 @@ class TestForwardPass:
         lv   = sess.run(loss, feed_dict={X: t(X_np), Y: t(Y_np)})
         assert lv.shape == (1,)
 
-    def test_loss_is_positive_finite(self):
+    def test_loss_is_positive_finite(self, t):
         """CE loss must be positive and finite for a random initialised model."""
         N = 8
         X, Y, logits, loss = self._build_small()
@@ -158,7 +145,7 @@ class TestForwardPass:
         assert np.isfinite(lv), f"Loss is not finite: {lv}"
         assert lv > 0.0,        f"Loss must be positive, got {lv}"
 
-    def test_uniform_logits_near_log10(self):
+    def test_uniform_logits_near_log10(self, t):
         """
         Before training, with random Xavier weights, the CE loss should be
         in a reasonable range.  For 10 balanced classes, the theoretical
@@ -176,7 +163,7 @@ class TestForwardPass:
         lv   = sess.run(loss, feed_dict={X: t(X_np), Y: t(Y_np)}).to_numpy()[0]
         assert lv < 20.0, f"Initial loss unreasonably large: {lv:.4f}"
 
-    def test_full_size_forward_pass(self):
+    def test_full_size_forward_pass(self, t):
         """Full 784→256→128→10 graph must run without error."""
         N = 16
         X  = vf.placeholder([784, 1])
@@ -196,13 +183,12 @@ class TestForwardPass:
         out  = sess.run(logits, feed_dict={X: t(X_np), Y: t(Y_np)})
         assert out.shape == (10, N)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Training dynamics
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestTrainingDynamics:
-    def test_train_op_returns_loss_tensor(self):
+    def test_train_op_returns_loss_tensor(self, t):
         """sess.run(train_op) must return a Tensor (the loss value)."""
         np.random.seed(0)
         N = 16
@@ -224,7 +210,7 @@ class TestTrainingDynamics:
         assert isinstance(result, vf.Tensor)
         assert result.shape == (1,)
 
-    def test_loss_decreases_after_adam_steps(self):
+    def test_loss_decreases_after_adam_steps(self, t):
         """CE loss must fall over 30 Adam steps on a fixed mini-batch."""
         np.random.seed(1)
         N = 64
@@ -253,7 +239,7 @@ class TestTrainingDynamics:
         assert loss1 < loss0, \
             f"Loss did not decrease: {loss0:.4f} → {loss1:.4f}"
 
-    def test_loss_decreases_sgd(self):
+    def test_loss_decreases_sgd(self, t):
         """Loss must also decrease with vanilla SGD (not just Adam)."""
         np.random.seed(2)
         N = 32
@@ -282,7 +268,7 @@ class TestTrainingDynamics:
         assert loss1 < loss0, \
             f"SGD loss did not decrease: {loss0:.4f} → {loss1:.4f}"
 
-    def test_accuracy_above_random_on_separable_data(self):
+    def test_accuracy_above_random_on_separable_data(self, t):
         """
         After ~100 Adam steps on a 10-class linearly-separable dataset,
         accuracy must be well above the random baseline of 10 %.
@@ -323,13 +309,12 @@ class TestTrainingDynamics:
         assert acc > 0.50, \
             f"Expected accuracy > 50 % on separable data, got {acc * 100:.1f}%"
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Mini training-loop (epoch + batching pattern)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestTrainingLoop:
-    def test_mini_epoch_loop_runs_without_error(self):
+    def test_mini_epoch_loop_runs_without_error(self, t):
         """
         Simulate 3 epochs of training on 200 synthetic samples with a
         batch size of 50.  Each epoch shuffles, splits into batches, and
@@ -364,7 +349,7 @@ class TestTrainingLoop:
                          feed_dict={X: vf.Tensor(Xs[:, start:end]),
                                     Y: vf.Tensor(Ys[:, start:end])})
 
-    def test_evaluation_after_training(self):
+    def test_evaluation_after_training(self, t):
         """
         After 3 epochs on separable synthetic data, running logits
         outside of train_op must give consistent (non-random) predictions.

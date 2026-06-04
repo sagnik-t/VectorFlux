@@ -13,19 +13,7 @@ import numpy as np
 import pytest
 import vectorflux as vf
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
-def t(arr):
-    return vf.Tensor(arr.astype(np.float32))
-
-
-@pytest.fixture(autouse=True)
-def clean_graph():
-    vf.reset_default_graph()
-    yield
-    vf.reset_default_graph()
-
 
 def np_softmax_ce(logits, labels):
     """Reference: mean CE over columns.  logits/labels: [C, N]."""
@@ -39,7 +27,6 @@ def np_softmax_ce(logits, labels):
         total += log_sum_exp - dot
     return total / N
 
-
 def numeric_grad(f, x, eps=1e-3):
     """Finite-difference gradient of scalar function f w.r.t. flat array x."""
     grad = np.zeros_like(x)
@@ -49,44 +36,43 @@ def numeric_grad(f, x, eps=1e-3):
         grad.flat[i] = (f(x_plus) - f(x_minus)) / (2 * eps)
     return grad
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # reduce_sum
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestReduceSum:
-    def test_eager_1d(self):
+    def test_eager_1d(self, t):
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         result = vf.reduce_sum(t(na)).to_numpy()
         np.testing.assert_allclose(result, [6.0], atol=1e-6)
 
-    def test_eager_2d(self):
+    def test_eager_2d(self, t):
         na = np.arange(6, dtype=np.float32).reshape(2, 3)
         result = vf.reduce_sum(t(na)).to_numpy()
         np.testing.assert_allclose(result, [na.sum()], atol=1e-6)
 
-    def test_eager_shape(self):
+    def test_eager_shape(self, t):
         na = np.ones((4, 5), dtype=np.float32)
         assert vf.reduce_sum(t(na)).shape == (1,)
 
-    def test_eager_single_element(self):
+    def test_eager_single_element(self, t):
         na = np.array([7.5], dtype=np.float32)
         np.testing.assert_allclose(
             vf.reduce_sum(t(na)).to_numpy(), [7.5], atol=1e-6)
 
-    def test_symbolic_node_type(self):
+    def test_symbolic_node_type(self, t):
         a = vf.make_const(t(np.ones(3, dtype=np.float32)))
         node = vf.reduce_sum(a)
         assert node.type == "ReduceSum"
 
-    def test_symbolic_value(self):
+    def test_symbolic_value(self, t):
         na = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
         a  = vf.make_const(t(na))
         sess = vf.Session()
         result = sess.run(vf.reduce_sum(a)).to_numpy()
         np.testing.assert_allclose(result, [na.sum()], atol=1e-6)
 
-    def test_gradient_shape(self):
+    def test_gradient_shape(self, t):
         """Gradient of reduce_sum w.r.t. input has same shape as input."""
         W = vf.Variable(t(np.ones((2, 3), dtype=np.float32)))
         loss = vf.reduce_sum(W)
@@ -95,7 +81,7 @@ class TestReduceSum:
         dW_val = sess.run(dW)
         assert dW_val.shape == (2, 3)
 
-    def test_gradient_value(self):
+    def test_gradient_value(self, t):
         """d(sum(x))/dx_i = 1 for all i."""
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         W  = vf.Variable(t(na))
@@ -105,7 +91,7 @@ class TestReduceSum:
         dW_val = sess.run(dW).to_numpy()
         np.testing.assert_allclose(dW_val, np.ones(3), atol=1e-6)
 
-    def test_gradient_numerical(self):
+    def test_gradient_numerical(self, t):
         """Numerical gradient check for reduce_sum."""
         na = np.array([0.5, -1.0, 2.0], dtype=np.float32)
         W  = vf.Variable(t(na))
@@ -119,44 +105,43 @@ class TestReduceSum:
             lambda x: vf.reduce_sum(t(x)).to_numpy()[0], na)
         np.testing.assert_allclose(analytical, numerical, rtol=1e-3)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # reduce_mean
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestReduceMean:
-    def test_eager_1d(self):
+    def test_eager_1d(self, t):
         na = np.array([2.0, 4.0, 6.0], dtype=np.float32)
         result = vf.reduce_mean(t(na)).to_numpy()
         np.testing.assert_allclose(result, [4.0], atol=1e-6)
 
-    def test_eager_2d(self):
+    def test_eager_2d(self, t):
         na = np.arange(6, dtype=np.float32).reshape(2, 3)
         result = vf.reduce_mean(t(na)).to_numpy()
         np.testing.assert_allclose(result, [na.mean()], atol=1e-6)
 
-    def test_eager_shape(self):
+    def test_eager_shape(self, t):
         assert vf.reduce_mean(t(np.ones((3, 4), dtype=np.float32))).shape == (1,)
 
-    def test_symbolic_node_type(self):
+    def test_symbolic_node_type(self, t):
         a = vf.make_const(t(np.ones(3, dtype=np.float32)))
         assert vf.reduce_mean(a).type == "ReduceMean"
 
-    def test_symbolic_value(self):
+    def test_symbolic_value(self, t):
         na = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         a  = vf.make_const(t(na))
         sess = vf.Session()
         result = sess.run(vf.reduce_mean(a)).to_numpy()
         np.testing.assert_allclose(result, [na.mean()], atol=1e-6)
 
-    def test_gradient_shape(self):
+    def test_gradient_shape(self, t):
         W = vf.Variable(t(np.ones((2, 3), dtype=np.float32)))
         loss = vf.reduce_mean(W)
         [dW] = vf.gradients(loss, [W])
         sess = vf.Session()
         assert sess.run(dW).shape == (2, 3)
 
-    def test_gradient_value(self):
+    def test_gradient_value(self, t):
         """d(mean(x))/dx_i = 1/N for all i."""
         na = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
         N  = float(na.size)
@@ -167,7 +152,7 @@ class TestReduceMean:
         dW_val = sess.run(dW).to_numpy()
         np.testing.assert_allclose(dW_val, np.full(4, 1.0 / N), atol=1e-6)
 
-    def test_gradient_numerical(self):
+    def test_gradient_numerical(self, t):
         na = np.array([0.5, -1.0, 2.0, 3.0], dtype=np.float32)
         W  = vf.Variable(t(na))
         loss = vf.reduce_mean(W)
@@ -178,13 +163,12 @@ class TestReduceMean:
             lambda x: vf.reduce_mean(t(x)).to_numpy()[0], na)
         np.testing.assert_allclose(analytical, numerical, rtol=1e-3)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # MSE loss
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestMSELoss:
-    def test_value_vs_numpy(self):
+    def test_value_vs_numpy(self, t):
         """vf.losses.mse matches numpy computation."""
         np_pred   = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
         np_target = np.array([[1.5, 1.0], [2.5, 5.0]], dtype=np.float32)
@@ -197,7 +181,7 @@ class TestMSELoss:
         np.testing.assert_allclose(
             sess.run(loss).to_numpy()[0], expected, rtol=1e-5)
 
-    def test_zero_loss(self):
+    def test_zero_loss(self, t):
         """Identical prediction and target → loss == 0."""
         na   = np.ones((3, 2), dtype=np.float32)
         pred = target = vf.make_const(t(na))
@@ -206,7 +190,7 @@ class TestMSELoss:
         np.testing.assert_allclose(
             sess.run(loss).to_numpy()[0], 0.0, atol=1e-7)
 
-    def test_output_shape(self):
+    def test_output_shape(self, t):
         """MSE loss is a scalar [1]."""
         pred   = vf.make_const(t(np.zeros((4, 8), dtype=np.float32)))
         target = vf.make_const(t(np.ones( (4, 8), dtype=np.float32)))
@@ -214,14 +198,14 @@ class TestMSELoss:
         sess   = vf.Session()
         assert sess.run(loss).shape == (1,)
 
-    def test_positive_loss(self):
+    def test_positive_loss(self, t):
         """Non-identical tensors → positive loss."""
         pred   = vf.make_const(t(np.zeros((3,), dtype=np.float32)))
         target = vf.make_const(t(np.ones( (3,), dtype=np.float32)))
         sess   = vf.Session()
         assert sess.run(vf.losses.mse(pred, target)).to_numpy()[0] > 0
 
-    def test_gradient_shape(self):
+    def test_gradient_shape(self, t):
         """Gradient of MSE w.r.t. predictions has same shape as predictions."""
         np_pred   = np.array([[1.0], [2.0]], dtype=np.float32)
         np_target = np.array([[0.0], [3.0]], dtype=np.float32)
@@ -233,7 +217,7 @@ class TestMSELoss:
         dW_val = sess.run(dW, feed_dict={ph: t(np_target)})
         assert dW_val.shape == (2, 1)
 
-    def test_gradient_numerical(self):
+    def test_gradient_numerical(self, t):
         """Numerical gradient check for MSE."""
         np_pred   = np.array([1.5, -0.5, 2.0], dtype=np.float32)
         np_target = np.array([1.0,  0.5, 3.0], dtype=np.float32)
@@ -248,7 +232,6 @@ class TestMSELoss:
             lambda x: np.mean((x - np_target) ** 2), np_pred)
         np.testing.assert_allclose(analytical, numerical, rtol=1e-3)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Softmax cross-entropy loss
 # ══════════════════════════════════════════════════════════════════════════════
@@ -261,9 +244,8 @@ def _one_hot(indices, C):
         oh[idx, j] = 1.0
     return oh
 
-
 class TestSoftmaxCrossEntropy:
-    def test_value_vs_numpy_1sample(self):
+    def test_value_vs_numpy_1sample(self, t):
         """Single-sample CE matches manual computation."""
         C  = 4
         logits = np.array([[1.0], [2.0], [3.0], [4.0]], dtype=np.float32)
@@ -277,7 +259,7 @@ class TestSoftmaxCrossEntropy:
         np.testing.assert_allclose(
             sess.run(loss).to_numpy()[0], expected, rtol=1e-5)
 
-    def test_value_vs_numpy_batch(self):
+    def test_value_vs_numpy_batch(self, t):
         """Batch CE matches numpy reference."""
         C, N = 5, 8
         np.random.seed(42)
@@ -292,7 +274,7 @@ class TestSoftmaxCrossEntropy:
         np.testing.assert_allclose(
             sess.run(loss).to_numpy()[0], expected, rtol=1e-4)
 
-    def test_output_shape(self):
+    def test_output_shape(self, t):
         """CE loss is a scalar [1]."""
         C, N = 3, 4
         l_node = vf.make_const(t(np.zeros((C, N), dtype=np.float32)))
@@ -300,7 +282,7 @@ class TestSoftmaxCrossEntropy:
         sess   = vf.Session()
         assert sess.run(vf.losses.softmax_cross_entropy(l_node, y_node)).shape == (1,)
 
-    def test_perfect_prediction_low_loss(self):
+    def test_perfect_prediction_low_loss(self, t):
         """Very confident correct prediction yields near-zero loss."""
         C = 3
         # Logits: large value on the correct class, near-zero elsewhere
@@ -312,7 +294,7 @@ class TestSoftmaxCrossEntropy:
         loss_val = sess.run(vf.losses.softmax_cross_entropy(l_node, y_node)).to_numpy()[0]
         assert loss_val < 0.01
 
-    def test_numerical_stability_large_logits(self):
+    def test_numerical_stability_large_logits(self, t):
         """No NaN/Inf with large logit values (log-sum-exp check)."""
         C, N = 4, 2
         logits = np.array([[1000.0, -1000.0],
@@ -326,7 +308,7 @@ class TestSoftmaxCrossEntropy:
         result = sess.run(vf.losses.softmax_cross_entropy(l_node, y_node)).to_numpy()[0]
         assert np.isfinite(result)
 
-    def test_gradient_shape(self):
+    def test_gradient_shape(self, t):
         """CE gradient w.r.t. logits has same shape as logits."""
         C, N = 4, 3
         np_logits = np.random.randn(C, N).astype(np.float32)
@@ -340,7 +322,7 @@ class TestSoftmaxCrossEntropy:
         dW_val = sess.run(dW, feed_dict={ph: t(np_labels)})
         assert dW_val.shape == (C, N)
 
-    def test_gradient_numerical(self):
+    def test_gradient_numerical(self, t):
         """Numerical gradient check for CE loss w.r.t. logits."""
         C, N = 3, 4
         np.random.seed(7)
@@ -360,14 +342,14 @@ class TestSoftmaxCrossEntropy:
         np.testing.assert_allclose(
             analytical.ravel(), numerical.ravel(), rtol=5e-3, atol=1e-4)
 
-    def test_node_type(self):
+    def test_node_type(self, t):
         """Graph node type is correct."""
         l = vf.make_const(t(np.zeros((3, 2), dtype=np.float32)))
         y = vf.make_const(t(np.zeros((3, 2), dtype=np.float32)))
         assert vf.losses.softmax_cross_entropy(l, y).type == \
                "SoftmaxCrossEntropyWithLogits"
 
-    def test_nn_alias(self):
+    def test_nn_alias(self, t):
         """vf.nn.softmax_cross_entropy is the same op."""
         l = vf.make_const(t(np.zeros((3, 2), dtype=np.float32)))
         y = vf.make_const(t(np.zeros((3, 2), dtype=np.float32)))
