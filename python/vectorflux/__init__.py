@@ -64,6 +64,46 @@ def reset_default_graph() -> None:
     _clear_variable_registry()
 
 
+# ── Default device ────────────────────────────────────────────────────────────
+# Controls where Variables are placed and where feed_dict tensors are moved.
+# Call vf.set_default_device('cuda') before building the graph to run on GPU.
+# Session captures this at construction time, so set it before creating one.
+
+_default_device: str = 'cpu'
+
+
+def set_default_device(device: str) -> None:
+    """
+    Set the default device for the framework.
+
+    Parameters
+    ----------
+    device : 'cpu' or 'cuda'
+
+    Effects
+    -------
+    - New Variable weights are placed on this device.
+    - Sessions created after this call auto-move feed_dict tensors to this device.
+    - Optimizer updates preserve the variable's current device automatically.
+
+    Call this once before building the graph, e.g.:
+        vf.set_default_device('cuda')
+        X_ph, Y_ph, logits, train_op = build_model()
+        sess = vf.Session()
+    """
+    global _default_device
+    if device not in ('cpu', 'cuda'):
+        raise ValueError(
+            f"set_default_device: unknown device '{device}'; "
+            "expected 'cpu' or 'cuda'")
+    _default_device = device
+
+
+def get_default_device() -> str:
+    """Return the current default device ('cpu' or 'cuda')."""
+    return _default_device
+
+
 # ── placeholder ───────────────────────────────────────────────────────────────
 
 def placeholder(shape, name=""):
@@ -77,7 +117,8 @@ class Variable:
     """
     A trainable parameter.  Wraps a Variable graph node and exposes:
       - .assign(value)  — update the stored value (accepts Tensor or ndarray)
-      - .numpy           — current value as a numpy array
+      - .numpy           — current value as a numpy array (always CPU)
+      - .device          — current device ('cpu' or 'cuda')
       - .name / .type / .inputs / .evaluated — mirrors the Node interface
 
     Can be passed anywhere a NodeRef is expected in the graph API.
@@ -91,6 +132,9 @@ class Variable:
     def __init__(self, initial_value, name=""):
         if not isinstance(initial_value, Tensor):
             initial_value = Tensor(np.asarray(initial_value, dtype=np.float32))
+        # Honour the default device: move to GPU if needed.
+        if initial_value.device != _default_device:
+            initial_value = initial_value.to(_default_device)
         self._node = make_variable(initial_value, name)
         _register_variable(self)
 
@@ -102,6 +146,11 @@ class Variable:
     def inputs(self):    return self._node.inputs
     @property
     def evaluated(self): return self._node.evaluated
+
+    @property
+    def device(self) -> str:
+        """Current device of the stored parameter tensor ('cpu' or 'cuda')."""
+        return variable_get_value(self._node).device
 
     @property
     def numpy(self) -> np.ndarray:
@@ -135,11 +184,17 @@ def _is_node(x):
     return isinstance(x, (Node, Variable))
 
 
-def _build_cpp_fd(feed_dict):
-    """Convert a Python feed_dict (Variable/Node → Tensor) to C++ format."""
+def _build_cpp_fd(feed_dict, device: str = 'cpu'):
+    """
+    Convert a Python feed_dict (Variable/Node → Tensor) to C++ format,
+    auto-moving each tensor to `device` if it isn't already there.
+    """
     cpp_fd = {}
     for k, v in (feed_dict or {}).items():
-        cpp_fd[k._node if isinstance(k, Variable) else k] = v
+        key = k._node if isinstance(k, Variable) else k
+        if v.device != device:
+            v = v.to(device)
+        cpp_fd[key] = v
     return cpp_fd
 
 
@@ -256,7 +311,7 @@ class TrainOp:
     def _execute(self, sess, feed_dict=None) -> Tensor:
         """Called by Session.run() when a TrainOp is passed as fetch."""
         self._step += 1
-        cpp_fd   = _build_cpp_fd(feed_dict)
+        cpp_fd   = _build_cpp_fd(feed_dict, sess._device)
         results  = sess._sess.run([self._loss_node] + self._grad_nodes, cpp_fd)
         loss_val = results[0]
 
@@ -275,6 +330,10 @@ class Session:
     TF1-style session.  Accepts Variable objects wherever a NodeRef is expected.
     Also handles TrainOp: sess.run(train_op) executes a full training step.
 
+    The session captures the default device at construction time and
+    automatically moves all feed_dict tensors to that device before execution —
+    so user code never needs to call .to('cuda') on batches manually.
+
     Usage:
         sess = vf.Session()
         result  = sess.run(output_node)
@@ -284,14 +343,15 @@ class Session:
     """
 
     def __init__(self):
-        self._sess = _CppSession()
+        self._sess   = _CppSession()
+        self._device = get_default_device()
 
     def run(self, fetches, feed_dict=None):
         # TrainOp: evaluate + apply updates
         if isinstance(fetches, TrainOp):
             return fetches._execute(self, feed_dict)
 
-        cpp_fd = _build_cpp_fd(feed_dict)
+        cpp_fd = _build_cpp_fd(feed_dict, self._device)
 
         if isinstance(fetches, (list, tuple)):
             cpp_fetches = [f._node if isinstance(f, Variable) else f
@@ -339,6 +399,7 @@ class Dense:
         nW    = np.random.uniform(-limit, limit,
                                    (units, input_dim)).astype(np.float32)
         w_name = (name + "/W") if name else ""
+        # Variable.__init__ will honour _default_device, placing W on GPU if set.
         self._W = Variable(Tensor(nW), name=w_name)
 
     @property
@@ -466,9 +527,15 @@ class GradientDescentOptimizer:
         return TrainOp(loss, var_list, grad_nodes, self)
 
     def apply_gradients(self, var_grad_pairs, step: int) -> None:
-        """Apply w ← w - lr * g for each (variable, gradient) pair."""
+        """Apply w ← w - lr * g for each (variable, gradient) pair,
+        preserving the variable's current device."""
         for var, grad_np in var_grad_pairs:
-            var.assign(var.numpy - self.lr * grad_np)
+            dev   = var.device
+            new_w = Tensor(np.asarray(var.numpy - self.lr * grad_np,
+                                      dtype=np.float32))
+            if dev == 'cuda':
+                new_w = new_w.to('cuda')
+            var.assign(new_w)
 
 
 class AdamOptimizer:
@@ -508,8 +575,10 @@ class AdamOptimizer:
         """
         Apply Adam update for each (variable, gradient) pair.
         step is the 1-indexed step count provided by TrainOp.
+        Preserves the variable's current device (CPU or CUDA).
         """
         for var, grad_np in var_grad_pairs:
+            dev = var.device
             vid = id(var)
             if vid not in self._m:
                 self._m[vid] = np.zeros_like(grad_np)
@@ -522,7 +591,10 @@ class AdamOptimizer:
             v_hat = self._v[vid] / (1.0 - self.beta2 ** step)
 
             update = self.lr * m_hat / (np.sqrt(v_hat) + self.epsilon)
-            var.assign(var.numpy - update)
+            new_w  = Tensor(np.asarray(var.numpy - update, dtype=np.float32))
+            if dev == 'cuda':
+                new_w = new_w.to('cuda')
+            var.assign(new_w)
 
 
 class _train:
@@ -556,6 +628,9 @@ __all__ = [
     "AdamOptimizer",                                   # T14
     # Session
     "Session",
+    # Device management
+    "set_default_device",
+    "get_default_device",
     # Graph lifecycle
     "reset_default_graph",
     # Low-level builders (backward compat)
