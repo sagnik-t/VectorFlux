@@ -18,3 +18,10 @@ __pycache__/
 *.idx
 *.ubyte
 data/
+# Build artifacts
+dist/
+wheelhouse/
+build/
+
+# Setuptools generated
+python/vectorflux.egg-info/
