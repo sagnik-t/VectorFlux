@@ -1,4 +1,3 @@
-# pyproject.toml (project root)
 [build-system]
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
@@ -6,6 +5,43 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vectorflux"
 version = "0.1.0"
+description = "A TensorFlow 1-style deep learning framework built from scratch in C++/CUDA"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    { name = "Arjun Singh" }
+]
+keywords = ["deep-learning", "neural-network", "cuda", "autograd", "machine-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/arjunsingh/VectorFlux"
+Repository = "https://github.com/arjunsingh/VectorFlux"
+Issues = "https://github.com/arjunsingh/VectorFlux/issues"
 
 [tool.setuptools.packages.find]
 where = ["python"]
+
+[tool.setuptools.package-data]
+vectorflux = ["_core*.so", "_core*.pyd"]
+
+[tool.setuptools]
+zip-safe = false
