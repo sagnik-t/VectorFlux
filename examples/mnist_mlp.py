@@ -11,7 +11,9 @@ Data layout convention (matches VectorFlux matmul: W @ x):
   labels  →  [10,  N]   float32, one-hot encoded
 
 Usage:
-  python examples/mnist_mlp.py
+  python examples/mnist_mlp.py                # defaults: cuda, 30 epochs
+  python examples/mnist_mlp.py --device cpu   # force CPU
+  python examples/mnist_mlp.py --device cuda --epochs 10
 """
 
 from __future__ import annotations
@@ -139,6 +141,7 @@ def build_model(learning_rate: float = 0.001):
     Y_ph = vf.placeholder([10,  1], name="Y")
 
     # Three fully-connected layers — Xavier-uniform init (done inside Dense)
+    # Weights are automatically placed on the default device.
     l1 = vf.Dense(784, 256, activation=vf.nn.relu, name="fc1")
     l2 = vf.Dense(256, 128, activation=vf.nn.relu, name="fc2")
     l3 = vf.Dense(128,  10, activation=None,        name="fc3")
@@ -166,14 +169,18 @@ def compute_accuracy(
     y_labels: np.ndarray,
     batch_size: int = 1000,
 ) -> float:
-    """Evaluate classification accuracy in minibatches to avoid OOM."""
+    """Evaluate classification accuracy in minibatches to avoid OOM.
+
+    Feed_dict tensors are plain vf.Tensor(numpy) — the Session auto-moves
+    them to the correct device (CPU or CUDA) transparently.
+    """
     n_total = X_data.shape[1]
     correct = 0
     for start in range(0, n_total, batch_size):
-        end     = min(start + batch_size, n_total)
-        out     = sess.run(logits_node,
-                           feed_dict={X_ph: vf.Tensor(X_data[:, start:end])})
-        preds   = np.argmax(out.to_numpy(), axis=0)          # [end-start]
+        end   = min(start + batch_size, n_total)
+        out   = sess.run(logits_node,
+                         feed_dict={X_ph: vf.Tensor(X_data[:, start:end])})
+        preds = np.argmax(out.to('cpu').to_numpy(), axis=0)
         correct += int(np.sum(preds == y_labels[start:end]))
     return correct / n_total
 
@@ -183,17 +190,19 @@ def compute_accuracy(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train(
-    num_epochs:  int   = 30,
-    batch_size:  int   = 128,
+    device:        str   = 'cuda',
+    num_epochs:    int   = 30,
+    batch_size:    int   = 128,
     learning_rate: float = 0.001,
-    seed:        int   = 42,
-    eval_every:  int   = 1,
+    seed:          int   = 42,
+    eval_every:    int   = 1,
 ) -> float:
     """
     Train the MLP on MNIST and return the final test accuracy.
 
     Parameters
     ----------
+    device        : 'cuda' or 'cpu'
     num_epochs    : number of passes over the training set
     batch_size    : mini-batch size
     learning_rate : Adam learning rate
@@ -204,6 +213,10 @@ def train(
     -------
     float : final test accuracy in [0, 1]
     """
+    # ── Device placement — must happen before graph construction ──────────────
+    vf.set_default_device(device)
+    print(f"Device: {device.upper()}")
+
     np.random.seed(seed)
     vf.reset_default_graph()
 
@@ -213,16 +226,18 @@ def train(
     n_batches  = (n_train + batch_size - 1) // batch_size
 
     # ── Graph ─────────────────────────────────────────────────────────────────
+    # Dense layers call Variable(), which honours the default device —
+    # weights are allocated directly on GPU if device='cuda'.
     X_ph, Y_ph, logits, train_op = build_model(learning_rate=learning_rate)
 
     init = vf.global_variables_initializer()
-    sess = vf.Session()
+    sess = vf.Session()   # captures device at construction time
     sess.run(init)
 
     param_count = sum(
         v.numpy.size for v in vf._get_all_variables()
     )
-    print(f"\nModel: 784 → 256 → 128 → 10  |  params: {param_count:,}  "
+    print(f"Model: 784 → 256 → 128 → 10  |  params: {param_count:,}  "
           f"(no biases)")
     print(f"Training: {num_epochs} epochs, batch={batch_size}, lr={learning_rate}\n")
     print(f"{'Epoch':>6}  {'loss':>8}  {'test acc':>9}")
@@ -240,11 +255,12 @@ def train(
         epoch_loss = 0.0
         for start in range(0, n_train, batch_size):
             end     = min(start + batch_size, n_train)
+            # Plain vf.Tensor from numpy — Session auto-moves to the right device.
             x_batch = vf.Tensor(X_shuf[:, start:end])
             y_batch = vf.Tensor(Y_shuf[:, start:end])
             loss_t  = sess.run(train_op,
                                feed_dict={X_ph: x_batch, Y_ph: y_batch})
-            epoch_loss += float(loss_t.to_numpy()[0])
+            epoch_loss += float(loss_t.to('cpu').to_numpy()[0])
 
         avg_loss = epoch_loss / n_batches
 
@@ -276,6 +292,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="VectorFlux MNIST MLP demo")
+    parser.add_argument("--device",    type=str,   default="cuda",
+                        choices=["cpu", "cuda"],
+                        help="Device to run on (default: cuda)")
     parser.add_argument("--epochs",    type=int,   default=30)
     parser.add_argument("--batch",     type=int,   default=128)
     parser.add_argument("--lr",        type=float, default=0.001)
@@ -285,6 +304,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     train(
+        device        = args.device,
         num_epochs    = args.epochs,
         batch_size    = args.batch,
         learning_rate = args.lr,
